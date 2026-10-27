@@ -1,0 +1,18 @@
+services:
+  servidor:
+    build:
+      context: .
+      dockerfile: Dockerfile_servidor
+    container_name: servidor
+    ports:
+      - 50051:50051
+
+  cliente:
+    build:
+      context: .
+      dockerfile: Dockerfile_cliente
+    container_name: cliente
+    depends_on:
+      - servidor
+    ports:
+      - 8000:8000

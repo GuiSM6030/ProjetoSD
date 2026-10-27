@@ -1,0 +1,9 @@
+services:
+  openmpi:
+    build: .
+    image: cc7261:openmpi
+    container_name: openmpi
+    stdin_open: true
+    tty: true
+    volumes:
+      - .:/app
