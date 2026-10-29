@@ -1,0 +1,76 @@
+services:
+  broker:
+    build:
+      context: .
+      dockerfile: Dockerfile.broker
+    ports:
+      - "5555:5555"
+    restart: unless-stopped
+
+  server-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    command: ["python", "-u", "-m", "server.server"]
+    environment:
+      SERVER_ID: server-1
+      BROKER_BACKEND: tcp://broker:5556
+      DATABASE_PATH: /data/server.sqlite3
+    volumes:
+      - server-1-data:/data
+    depends_on:
+      - broker
+    restart: unless-stopped
+
+  server-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    command: ["python", "-u", "-m", "server.server"]
+    environment:
+      SERVER_ID: server-2
+      BROKER_BACKEND: tcp://broker:5556
+      DATABASE_PATH: /data/server.sqlite3
+    volumes:
+      - server-2-data:/data
+    depends_on:
+      - broker
+    restart: unless-stopped
+
+  bot-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    command: ["python", "-u", "client/bot.py"]
+    environment:
+      BOT_NAME: bot-alice
+      CHANNEL_NAME: geral
+      BROKER_FRONTEND: tcp://broker:5555
+      SERVER_IDS: server-1,server-2
+      REQUEST_TIMEOUT_MS: "1500"
+    depends_on:
+      - broker
+      - server-1
+      - server-2
+    restart: unless-stopped
+
+  bot-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    command: ["python", "-u", "client/bot.py"]
+    environment:
+      BOT_NAME: bot-bob
+      CHANNEL_NAME: geral
+      BROKER_FRONTEND: tcp://broker:5555
+      SERVER_IDS: server-1,server-2
+      REQUEST_TIMEOUT_MS: "1500"
+    depends_on:
+      - broker
+      - server-1
+      - server-2
+    restart: unless-stopped
+
+volumes:
+  server-1-data:
+  server-2-data:

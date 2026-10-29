@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package bbs;
+
+message Envelope {
+  int64 sent_at_unix_ms = 1;
+  string message_id = 2;
+
+  oneof payload {
+    LoginRequest login_request = 10;
+    LoginResponse login_response = 11;
+    ListChannelsRequest list_channels_request = 12;
+    ListChannelsResponse list_channels_response = 13;
+    CreateChannelRequest create_channel_request = 14;
+    CreateChannelResponse create_channel_response = 15;
+    ErrorResponse error_response = 16;
+  }
+}
+
+message LoginRequest {
+  string username = 1;
+}
+
+message LoginResponse {
+  bool accepted = 1;
+  string error_code = 2;
+  string detail = 3;
+}
+
+message ListChannelsRequest {}
+
+message ListChannelsResponse {
+  repeated string channel_names = 1;
+}
+
+message CreateChannelRequest {
+  string name = 1;
+}
+
+message CreateChannelResponse {
+  bool created = 1;
+  string error_code = 2;
+  string detail = 3;
+}
+
+message ErrorResponse {
+  string error_code = 1;
+  string detail = 2;
+}

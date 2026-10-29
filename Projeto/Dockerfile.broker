@@ -1,0 +1,12 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libzmq3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY broker/broker.c .
+RUN gcc -O2 -Wall -Wextra -Werror broker.c -lzmq -o broker
+
+EXPOSE 5555
+CMD ["./broker"]

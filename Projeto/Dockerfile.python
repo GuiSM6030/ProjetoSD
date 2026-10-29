@@ -1,0 +1,16 @@
+FROM python:3.13-slim
+
+WORKDIR /app
+ENV PYTHONPATH=/app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY protocol/bbs.proto protocol/bbs.proto
+RUN python -m grpc_tools.protoc -Iprotocol --python_out=. protocol/bbs.proto
+
+COPY client/ client/
+COPY server/ server/
+COPY tests/ tests/
+
+CMD ["python", "-u", "client/bot.py"]
