@@ -4,6 +4,22 @@
 #include <zmq.h>
 
 #define MAX_FRAMES 8
+#define MAX_SERVERS 16
+
+static char server_names[MAX_SERVERS][64];
+static size_t server_name_sizes[MAX_SERVERS];
+static zmq_msg_t server_routes[MAX_SERVERS];
+static size_t server_count = 0;
+
+static zmq_msg_t *find_server_route(const char *name, size_t name_size) {
+    for (size_t i = 0; i < server_count; ++i) {
+        if (name_size == server_name_sizes[i] &&
+            memcmp(server_names[i], name, name_size) == 0) {
+            return &server_routes[i];
+        }
+    }
+    return NULL;
+}
 
 static int receive_frames(void *socket, zmq_msg_t frames[MAX_FRAMES],
                           size_t *frame_count) {
@@ -107,18 +123,26 @@ int main(void) {
             zmq_msg_t frames[MAX_FRAMES];
             size_t count = 0;
             if (receive_frames(frontend, frames, &count) == 0) {
-                if (count == 4 && zmq_msg_size(&frames[1]) == 0) {
-                    const char *server_id = zmq_msg_data(&frames[2]);
+                if ((count == 4 && zmq_msg_size(&frames[1]) == 0) || count == 3) {
+                    size_t server_frame = count == 4 ? 2 : 1;
+                    size_t payload_frame = count == 4 ? 3 : 2;
+                    const char *server_id = zmq_msg_data(&frames[server_frame]);
                     printf("REQ roteado para %.*s (%zu bytes)\n",
-                           (int)zmq_msg_size(&frames[2]), server_id,
-                           zmq_msg_size(&frames[3]));
+                           (int)zmq_msg_size(&frames[server_frame]), server_id,
+                           zmq_msg_size(&frames[payload_frame]));
                     fflush(stdout);
-                    if (send_frame(backend, &frames[2], 1) == 0 &&
+                    zmq_msg_t *route = find_server_route(server_id,
+                                                         zmq_msg_size(&frames[server_frame]));
+                    if (route != NULL &&
+                        zmq_send(backend, zmq_msg_data(route), zmq_msg_size(route), ZMQ_SNDMORE) >= 0 &&
                         send_frame(backend, &frames[0], 1) == 0) {
-                        (void)send_frame(backend, &frames[3], 0);
+                        (void)send_frame(backend, &frames[payload_frame], 0);
+                    } else {
+                        fprintf(stderr, "Servidor %.*s não registrado.\n",
+                                (int)zmq_msg_size(&frames[server_frame]), server_id);
                     }
                 } else {
-                    fprintf(stderr, "REQ inválido: esperado 4 frames.\n");
+                    fprintf(stderr, "REQ inválido: esperado 3 ou 4 frames, recebido %zu.\n", count);
                 }
                 close_frames(frames, count);
             }
@@ -128,13 +152,34 @@ int main(void) {
             zmq_msg_t frames[MAX_FRAMES];
             size_t count = 0;
             if (receive_frames(backend, frames, &count) == 0) {
+                fprintf(stderr, "Backend recebeu %zu frames", count);
+                for (size_t i = 0; i < count; ++i) {
+                    fprintf(stderr, " [%zu:%zu]", i, zmq_msg_size(&frames[i]));
+                }
+                fprintf(stderr, "\n");
                 if (count == 3) {
                     if (send_frame(frontend, &frames[1], 1) == 0 &&
                         zmq_send(frontend, "", 0, ZMQ_SNDMORE) >= 0) {
                         (void)send_frame(frontend, &frames[2], 0);
                     }
+                } else if (count == 3 && zmq_msg_size(&frames[1]) == 5 &&
+                           memcmp(zmq_msg_data(&frames[1]), "READY", 5) == 0) {
+                    size_t name_size = zmq_msg_size(&frames[2]);
+                    if (name_size > 0 && name_size < sizeof(server_names[0]) &&
+                        server_count < MAX_SERVERS) {
+                        memcpy(server_names[server_count], zmq_msg_data(&frames[2]), name_size);
+                        server_names[server_count][name_size] = '\0';
+                        server_name_sizes[server_count] = name_size;
+                        zmq_msg_init_size(&server_routes[server_count], zmq_msg_size(&frames[0]));
+                        memcpy(zmq_msg_data(&server_routes[server_count]),
+                               zmq_msg_data(&frames[0]), zmq_msg_size(&frames[0]));
+                        ++server_count;
+                    }
+                    printf("Servidor registrado: %.*s\n",
+                           (int)name_size, (char *)zmq_msg_data(&frames[2]));
+                    fflush(stdout);
                 } else {
-                    fprintf(stderr, "REP inválido: esperado 3 frames.\n");
+                    fprintf(stderr, "REP inválido: esperado 3 frames, recebido %zu.\n", count);
                 }
                 close_frames(frames, count);
             }

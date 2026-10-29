@@ -128,9 +128,9 @@ def executar():
 
     context = zmq.Context()
     socket = context.socket(zmq.DEALER)
-    socket.setsockopt(zmq.IDENTITY, servidor_id.encode("utf-8"))
     socket.setsockopt(zmq.LINGER, 0)
     socket.connect(endereco)
+    socket.send_multipart([b"READY", servidor_id.encode("utf-8")])
 
     publisher = context.socket(zmq.PUB)
     publisher.setsockopt(zmq.LINGER, 0)
@@ -142,6 +142,8 @@ def executar():
 
     try:
         while executando:
+            socket.send_multipart([b"READY", servidor_id.encode("utf-8")])
+            print(f"Pronto: heartbeat {servidor_id} enviado ao broker.", flush=True)
             if not socket.poll(500, zmq.POLLIN):
                 continue
 
