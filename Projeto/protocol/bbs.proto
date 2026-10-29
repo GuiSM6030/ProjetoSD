@@ -13,6 +13,9 @@ message Envelope {
     ListChannelsResponse list_channels_response = 13;
     CreateChannelRequest create_channel_request = 14;
     CreateChannelResponse create_channel_response = 15;
+    PublishRequest publish_request = 17;
+    PublishResponse publish_response = 18;
+    Publication publication = 19;
     ErrorResponse error_response = 16;
   }
 }
@@ -41,6 +44,22 @@ message CreateChannelResponse {
   bool created = 1;
   string error_code = 2;
   string detail = 3;
+}
+
+message PublishRequest {
+  string channel_name = 1;
+  string content = 2;
+}
+
+message PublishResponse {
+  bool published = 1;
+  string error_code = 2;
+  string detail = 3;
+}
+
+message Publication {
+  string channel_name = 1;
+  string content = 2;
 }
 
 message ErrorResponse {

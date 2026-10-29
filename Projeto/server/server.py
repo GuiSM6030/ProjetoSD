@@ -23,7 +23,7 @@ def criar_mensagem():
     )
 
 
-def processar_mensagem(cliente_id, mensagem, dados, usuarios):
+def processar_mensagem(cliente_id, mensagem, dados, usuarios, publisher=None):
     resposta = criar_mensagem()
     if mensagem.sent_at_unix_ms <= 0:
         resposta.error_response.error_code = "MISSING_TIMESTAMP"
@@ -73,6 +73,38 @@ def processar_mensagem(cliente_id, mensagem, dados, usuarios):
         else:
             resposta.create_channel_response.error_code = "CHANNEL_EXISTS"
             resposta.create_channel_response.detail = "Esse canal já existe."
+    elif tipo == "publish_request":
+        pedido = mensagem.publish_request
+        if not canal_valido.fullmatch(pedido.channel_name):
+            resposta.publish_response.error_code = "INVALID_CHANNEL_NAME"
+            resposta.publish_response.detail = "Nome de canal inválido."
+        elif not 1 <= len(pedido.content.strip()) <= 1024:
+            resposta.publish_response.error_code = "INVALID_CONTENT"
+            resposta.publish_response.detail = "O conteúdo deve ter entre 1 e 1024 caracteres."
+        elif not dados.channel_exists(pedido.channel_name):
+            resposta.publish_response.error_code = "CHANNEL_NOT_FOUND"
+            resposta.publish_response.detail = "O canal não existe neste servidor."
+        else:
+            dados.record_exchange(
+                "client_to_server", "publish_request", mensagem.message_id,
+                usuarios[cliente_id], pedido.channel_name, pedido.content,
+                mensagem.sent_at_unix_ms, time.time_ns() // 1_000_000,
+            )
+            dados.record_publication(
+                mensagem.message_id, pedido.channel_name, usuarios[cliente_id],
+                pedido.content, mensagem.sent_at_unix_ms,
+            )
+            if publisher is not None:
+                publicacao = criar_mensagem()
+                publicacao.publication.channel_name = pedido.channel_name
+                publicacao.publication.content = pedido.content
+                publicacao.message_id = mensagem.message_id
+                publisher.send_multipart([
+                    pedido.channel_name.encode("utf-8"),
+                    publicacao.SerializeToString(),
+                ])
+            resposta.publish_response.published = True
+            resposta.publish_response.detail = "Publicação aceita pelo servidor."
     else:
         resposta.error_response.error_code = "UNKNOWN_REQUEST"
         resposta.error_response.detail = "Tipo de mensagem não reconhecido."
@@ -99,6 +131,10 @@ def executar():
     socket.setsockopt(zmq.IDENTITY, servidor_id.encode("utf-8"))
     socket.setsockopt(zmq.LINGER, 0)
     socket.connect(endereco)
+
+    publisher = context.socket(zmq.PUB)
+    publisher.setsockopt(zmq.LINGER, 0)
+    publisher.connect(os.environ.get("PUBSUB_XSUB", "tcp://pubsub-proxy:5557"))
 
     signal.signal(signal.SIGTERM, parar)
     signal.signal(signal.SIGINT, parar)
@@ -137,7 +173,7 @@ def executar():
                 flush=True,
             )
             resposta = processar_mensagem(
-                cliente_id, mensagem, dados, usuarios
+                cliente_id, mensagem, dados, usuarios, publisher
             )
             print(
                 f"ENVIADO ao cliente "
@@ -148,6 +184,7 @@ def executar():
             socket.send_multipart([cliente_id, resposta.SerializeToString()])
     finally:
         socket.close(0)
+        publisher.close(0)
         context.term()
         dados.close()
 

@@ -116,6 +116,98 @@ class BbsServerTests(unittest.TestCase):
         self.assertEqual(response.error_response.error_code, "MISSING_TIMESTAMP")
         self.assertGreater(response.sent_at_unix_ms, 0)
 
+    def test_publish_requires_login_existing_channel_and_valid_content(self) -> None:
+        request = bbs_pb2.Envelope(
+            sent_at_unix_ms=10,
+            publish_request=bbs_pb2.PublishRequest(
+                channel_name="geral", content="olá"
+            ),
+        )
+        response = processar_mensagem(
+            self.client_id, request, self.dados, self.usuarios
+        )
+        self.assertEqual(response.error_response.error_code, "LOGIN_REQUIRED")
+
+        processar_mensagem(
+            self.client_id,
+            bbs_pb2.Envelope(
+                sent_at_unix_ms=11,
+                login_request=bbs_pb2.LoginRequest(username="bot_test"),
+            ),
+            self.dados,
+            self.usuarios,
+        )
+        response = processar_mensagem(
+            self.client_id, request, self.dados, self.usuarios
+        )
+        self.assertEqual(response.publish_response.error_code, "CHANNEL_NOT_FOUND")
+
+        invalid_content = bbs_pb2.Envelope(
+            sent_at_unix_ms=12,
+            publish_request=bbs_pb2.PublishRequest(
+                channel_name="geral", content=" "
+            ),
+        )
+        self.dados.create_channel("geral", "bot_test", 9)
+        response = processar_mensagem(
+            self.client_id, invalid_content, self.dados, self.usuarios
+        )
+        self.assertEqual(response.publish_response.error_code, "INVALID_CONTENT")
+
+    def test_publish_is_timestamped_persisted_and_sent_to_pub(self) -> None:
+        processar_mensagem(
+            self.client_id,
+            bbs_pb2.Envelope(
+                sent_at_unix_ms=1,
+                login_request=bbs_pb2.LoginRequest(username="bot_test"),
+            ),
+            self.dados,
+            self.usuarios,
+        )
+        self.dados.create_channel("geral", "bot_test", 2)
+
+        class Publisher:
+            def __init__(self) -> None:
+                self.frames = None
+
+            def send_multipart(self, frames) -> None:
+                self.frames = frames
+
+        publisher = Publisher()
+        response = processar_mensagem(
+            self.client_id,
+            bbs_pb2.Envelope(
+                sent_at_unix_ms=123,
+                message_id="request-123",
+                publish_request=bbs_pb2.PublishRequest(
+                    channel_name="geral", content="evento persistido"
+                ),
+            ),
+            self.dados,
+            self.usuarios,
+            publisher,
+        )
+        self.assertTrue(response.publish_response.published)
+        self.assertGreater(response.sent_at_unix_ms, 0)
+        self.assertEqual(publisher.frames[0], b"geral")
+
+        publication = bbs_pb2.Envelope()
+        publication.ParseFromString(publisher.frames[1])
+        self.assertEqual(publication.message_id, "request-123")
+        self.assertGreater(publication.sent_at_unix_ms, 0)
+        self.assertEqual(publication.publication.channel_name, "geral")
+        self.assertEqual(publication.publication.content, "evento persistido")
+
+        row = self.dados.connection.execute(
+            "SELECT message_id, channel_name, content, sent_at_unix_ms "
+            "FROM publications"
+        ).fetchone()
+        self.assertEqual(row, ("request-123", "geral", "evento persistido", 123))
+        exchange = self.dados.connection.execute(
+            "SELECT direction, message_type, message_id FROM exchanged_messages"
+        ).fetchone()
+        self.assertEqual(exchange, ("client_to_server", "publish_request", "request-123"))
+
 
 if __name__ == "__main__":
     unittest.main()

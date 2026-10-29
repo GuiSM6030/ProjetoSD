@@ -1,21 +1,47 @@
 # Projeto de Sistemas Distribuídos
 
-## Parte 1
+# Projeto de Sistemas Distribuídos
 
-Nesta parte, os bots fazem login, consultam os canais existentes e criam o canal configurado caso ele ainda não exista. Não há entrada pelo teclado.
+## Arquitetura
 
-## Escolhas
+O sistema continua dividido em clientes Python, servidores Python e um broker Req/Rep em C. O broker encaminha pedidos entre as portas `5555` e `5556`. A Parte 2 adiciona um proxy Pub/Sub isolado em `pubsub_proxy.py`, com `XSUB` em `5557` e `XPUB` em `5558`.
 
-- Os bots e servidores foram feitos em Python. O broker foi feito em C, então o projeto usa duas linguagens.
-- A comunicação usa ZeroMQ. O broker encaminha cada pedido ao servidor indicado pelo cliente.
-- As mensagens usam Protocol Buffers em formato binário. O `Envelope` tem o timestamp em milissegundos e o tipo de pedido ou resposta. O arquivo do protocolo é `protocol/bbs.proto`.
-- Cada servidor grava seus dados em um banco SQLite próprio. O Compose usa um volume diferente para cada servidor. São salvos os logins aceitos, com timestamp, e os canais criados.
+```text
+bot (REQ) -> broker 5555 -> servidor (DEALER)
+servidor (PUB) -> proxy XSUB 5557 -> proxy XPUB 5558 -> bot (SUB)
+```
 
-Os nomes de usuário podem ter até 32 letras, números, `_` ou `-`. Os canais seguem a mesma regra, mas devem começar com letra ou número. Se o canal já existe, o servidor responde com `CHANNEL_EXISTS`.
+O nome do canal é usado como tópico e como primeiro frame da publicação. Assim, o bot pode assinar vários canais na mesma conexão SUB. A escolha das assinaturas pertence ao cliente; o servidor não altera as assinaturas.
 
-Os bots tentam primeiro o servidor `server-1`. Se ele não responder, tentam o `server-2` e fazem login nele. Como os bancos são separados, os canais não são copiados de um servidor para o outro.
+## Protocolo
 
-## Executar
+Todas as mensagens são envelopes Protobuf definidos em `protocol/bbs.proto`. O `Envelope` inclui `sent_at_unix_ms` e `message_id`. Os novos tipos são `PublishRequest`, `PublishResponse` e `Publication`:
+
+1. O bot envia ao servidor `{channel_name, content}` com timestamp e `message_id`.
+2. O servidor verifica login, nome, conteúdo e existência do canal.
+3. Em caso positivo, grava o evento e envia `{topic, Envelope(Publication)}` ao PUB.
+4. O servidor responde com `PublishResponse`. Essa resposta confirma apenas aceitação pelo servidor, não entrega a um assinante.
+
+Uma publicação positiva não é confirmação de recebimento Pub/Sub. A entrega do assinante é observada apenas pela mensagem recebida pelo SUB e pelo timestamp local de recebimento do bot.
+
+Os timestamps são relógios Unix em milissegundos. O envio usa o relógio de quem cria o `Envelope`; no recebimento, o bot registra outro timestamp local ao processar o frame.
+
+## Comportamento dos bots
+
+Cada bot faz login, consulta os canais e tenta manter pelo menos cinco canais disponíveis. Duplicidades na criação são tratadas por `CHANNEL_EXISTS`. Em seguida, escolhe aleatoriamente canais disponíveis até possuir pelo menos três assinaturas.
+
+Depois, o bot escolhe um canal disponível e tenta publicar dez mensagens aleatórias. A recepção SUB é consultada a cada fração do intervalo de um segundo, mantendo-a ativa durante todo o lote. Por limitação do PUB/SUB do ZeroMQ, assinantes lentos ou desconectados podem perder mensagens e não há confirmação nem retransmissão automática pelo proxy.
+
+## Persistência
+
+Cada servidor continua tendo seu próprio SQLite e volume. `store.py` cria as tabelas sem apagar os dados existentes. Além de logins e canais, são persistidos:
+
+- `publications`: identificação, canal, autor, conteúdo e timestamp enviado;
+- `exchanged_messages`: direção, tipo, correlação, usuário, canal, conteúdo e timestamps enviado/recebido pelo servidor.
+
+As consultas usam parâmetros SQLite. Os volumes são separados por instância; portanto canais criados em servidores diferentes não são sincronizados automaticamente, assim como a Parte 1 já registrava essa limitação.
+
+## Executar e testar
 
 Na pasta `Projeto/`, execute:
 
@@ -23,13 +49,26 @@ Na pasta `Projeto/`, execute:
 docker compose up --build
 ```
 
-O Compose inicia dois bots, dois servidores e o broker. Os programas mostram no terminal as mensagens enviadas e recebidas. Para parar, use `Ctrl+C`. O comando `docker compose down -v` também apaga os volumes com os dados.
+O Compose inicia o broker, o proxy Pub/Sub, dois servidores e dois bots. Os timestamps enviados e recebidos aparecem nos logs dos bots.
+
+```sh
+python -m grpc_tools.protoc -Iprotocol --python_out=. protocol/bbs.proto
+python -m unittest discover -s tests -v
+docker compose config
+```
+
+O código Protobuf não é versionado manualmente; ele é gerado pelo `Dockerfile.python` durante o build. `docker compose down -v` remove os volumes e os dados persistidos.
+
+## Limitações ZeroMQ
+
+PUB/SUB não mantém fila enquanto um assinante está desconectado. O proxy não garante entrega, ordem global entre servidores, persistência de mensagens ou confirmação de recebimento. Uma `PublishResponse` aceita descreve somente o processamento do servidor. Em caso de falha de um servidor, o bot tenta o servidor seguinte, mas o estado permanece distribuído entre bancos separados.
 
 ## Arquivos
 
-- `client/bot.py`: bot que faz login, lista canais e cria o canal configurado.
-- `server/server.py`: recebe e responde aos pedidos.
-- `server/store.py`: grava e consulta os dados SQLite.
-- `broker/broker.c`: encaminha mensagens ZeroMQ entre bots e servidores.
-- `protocol/bbs.proto`: formato das mensagens.
+- `client/bot.py`: login, failover, gestão de canais, assinaturas SUB e publicação.
+- `server/server.py`: processamento Req/Rep, validação e publicação.
+- `server/store.py`: persistência SQLite parametrizada.
+- `pubsub_proxy.py`: transporte Pub/Sub com XSUB/XPUB.
+- `broker/broker.c`: encaminhamento Req/Rep entre clientes e servidores.
+- `protocol/bbs.proto`: contratos Protobuf.
 - `docker-compose.yaml`: configuração dos containers.

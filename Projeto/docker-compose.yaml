@@ -7,6 +7,15 @@ services:
       - "5555:5555"
     restart: unless-stopped
 
+  pubsub-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.pubsub
+    ports:
+      - "5557:5557"
+      - "5558:5558"
+    restart: unless-stopped
+
   server-1:
     build:
       context: .
@@ -16,10 +25,12 @@ services:
       SERVER_ID: server-1
       BROKER_BACKEND: tcp://broker:5556
       DATABASE_PATH: /data/server.sqlite3
+      PUBSUB_XSUB: tcp://pubsub-proxy:5557
     volumes:
       - server-1-data:/data
     depends_on:
       - broker
+      - pubsub-proxy
     restart: unless-stopped
 
   server-2:
@@ -31,10 +42,12 @@ services:
       SERVER_ID: server-2
       BROKER_BACKEND: tcp://broker:5556
       DATABASE_PATH: /data/server.sqlite3
+      PUBSUB_XSUB: tcp://pubsub-proxy:5557
     volumes:
       - server-2-data:/data
     depends_on:
       - broker
+      - pubsub-proxy
     restart: unless-stopped
 
   bot-1:
@@ -46,10 +59,12 @@ services:
       BOT_NAME: bot-alice
       CHANNEL_NAME: geral
       BROKER_FRONTEND: tcp://broker:5555
+      PUBSUB_XPUB: tcp://pubsub-proxy:5558
       SERVER_IDS: server-1,server-2
       REQUEST_TIMEOUT_MS: "1500"
     depends_on:
       - broker
+      - pubsub-proxy
       - server-1
       - server-2
     restart: unless-stopped
@@ -63,10 +78,12 @@ services:
       BOT_NAME: bot-bob
       CHANNEL_NAME: geral
       BROKER_FRONTEND: tcp://broker:5555
+      PUBSUB_XPUB: tcp://pubsub-proxy:5558
       SERVER_IDS: server-1,server-2
       REQUEST_TIMEOUT_MS: "1500"
     depends_on:
       - broker
+      - pubsub-proxy
       - server-1
       - server-2
     restart: unless-stopped
