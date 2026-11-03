@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import signal
@@ -9,6 +10,7 @@ from google.protobuf.message import DecodeError
 
 import bbs_pb2
 from clocks import LogicalClock, PhysicalClockOffset, unix_time_ms
+from server.coordination import ServerCoordinator
 from server.reference_client import ReferenceClient
 from .store import Store
 
@@ -74,7 +76,7 @@ def processar_mensagem(
     if cliente_id not in usuarios:
         resposta.error_response.error_code = "LOGIN_REQUIRED"
         resposta.error_response.detail = "Faça login antes de acessar os canais."
-        return resposta
+        return finalizar_resposta()
 
     if tipo == "list_channels_request":
         resposta.list_channels_response.channel_names.extend(
@@ -164,7 +166,7 @@ def executar():
         timeout_ms=int(os.environ.get("REFERENCE_TIMEOUT_MS", "1000")),
     )
     rank = referencia.solicitar_rank(servidor_id)
-    referencia.solicitar_lista()
+    servidores_disponiveis = referencia.solicitar_lista()
 
     socket = context.socket(zmq.DEALER)
     socket.setsockopt(zmq.LINGER, 0)
@@ -175,6 +177,33 @@ def executar():
     publisher.setsockopt(zmq.LINGER, 0)
     publisher.connect(os.environ.get("PUBSUB_XSUB", "tcp://pubsub-proxy:5557"))
 
+    subscriber = context.socket(zmq.SUB)
+    subscriber.setsockopt(zmq.LINGER, 0)
+    subscriber.setsockopt(zmq.SUBSCRIBE, b"servers")
+    subscriber.connect(os.environ.get("PUBSUB_XPUB", "tcp://pubsub-proxy:5558"))
+
+    control_socket = context.socket(zmq.REP)
+    control_socket.setsockopt(zmq.LINGER, 0)
+    control_socket.bind(os.environ.get(
+        "SERVER_CONTROL_ENDPOINT", "tcp://*:5560"
+    ))
+
+    coordenacao = ServerCoordinator(
+        context,
+        servidor_id,
+        rank,
+        relogio_logico,
+        relogio_fisico,
+        publisher,
+        timeout_ms=int(os.environ.get("SERVER_CONTROL_TIMEOUT_MS", "700")),
+    )
+    coordenacao.update_servers(servidores_disponiveis)
+
+    poller = zmq.Poller()
+    poller.register(socket, zmq.POLLIN)
+    poller.register(control_socket, zmq.POLLIN)
+    poller.register(subscriber, zmq.POLLIN)
+
     signal.signal(signal.SIGTERM, parar)
     signal.signal(signal.SIGINT, parar)
     print(f"Servidor {servidor_id} conectado ao broker.", flush=True)
@@ -184,14 +213,45 @@ def executar():
         nonlocal rank
         if rank is None:
             rank = referencia.solicitar_rank(servidor_id)
+            coordenacao.rank = rank or 0
         referencia.enviar_heartbeat(servidor_id, rank)
-        referencia.solicitar_lista()
+        servidores_atualizados = referencia.solicitar_lista()
+        if servidores_atualizados is not None:
+            coordenacao.update_servers(servidores_atualizados)
+
+    def sincronizar_relogio_se_necessario():
+        if coordenacao.synchronization_due():
+            coordenacao.synchronize_clock()
 
     try:
         while executando:
             socket.send_multipart([b"READY", servidor_id.encode("utf-8")])
-            print(f"Pronto: heartbeat {servidor_id} enviado ao broker.", flush=True)
-            if not socket.poll(500, zmq.POLLIN):
+            eventos = dict(poller.poll(500))
+
+            if control_socket in eventos:
+                try:
+                    pedido_controle = control_socket.recv_json()
+                except ValueError:
+                    pedido_controle = {}
+                coordenacao.note_message()
+                resposta_controle = coordenacao.handle_peer_request(
+                    pedido_controle
+                )
+                control_socket.send_json(resposta_controle)
+                coordenacao.note_message()
+
+            if subscriber in eventos:
+                frames_pubsub = subscriber.recv_multipart()
+                if len(frames_pubsub) == 2 and frames_pubsub[0] == b"servers":
+                    coordenacao.note_message()
+                    try:
+                        anuncio = json.loads(frames_pubsub[1].decode("utf-8"))
+                    except (UnicodeDecodeError, ValueError):
+                        anuncio = {}
+                    coordenacao.receive_announcement(anuncio)
+
+            if socket not in eventos:
+                sincronizar_relogio_se_necessario()
                 continue
 
             frames = socket.recv_multipart()
@@ -201,6 +261,7 @@ def executar():
 
             cliente_id, conteudo = frames
             mensagens_recebidas += 1
+            coordenacao.note_message()
             mensagem = bbs_pb2.Envelope()
             try:
                 mensagem.ParseFromString(conteudo)
@@ -214,8 +275,10 @@ def executar():
                 socket.send_multipart(
                     [cliente_id, resposta.SerializeToString()]
                 )
+                coordenacao.note_message()
                 if mensagens_recebidas % 10 == 0:
                     sincronizar_referencia()
+                sincronizar_relogio_se_necessario()
                 continue
 
             print(
@@ -235,11 +298,15 @@ def executar():
                 flush=True,
             )
             socket.send_multipart([cliente_id, resposta.SerializeToString()])
+            coordenacao.note_message()
             if mensagens_recebidas % 10 == 0:
                 sincronizar_referencia()
+            sincronizar_relogio_se_necessario()
     finally:
         socket.close(0)
         publisher.close(0)
+        subscriber.close(0)
+        control_socket.close(0)
         context.term()
         dados.close()
 

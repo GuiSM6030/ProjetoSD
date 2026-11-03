@@ -44,15 +44,6 @@ class ReferenceClient:
 
         self.logical_clock.on_receive(response.get("logical_clock", 0))
         print(f"REP referência: {response}", flush=True)
-        if action == "heartbeat" and response.get("ok"):
-            reference_time = response.get("server_time_unix_ms")
-            if reference_time is not None:
-                offset, step = self.physical_clock.adjust(reference_time)
-                print(
-                    f"Hora recebida={reference_time}; ajuste aplicado={step}ms; "
-                    f"offset atual={offset}ms.",
-                    flush=True,
-                )
         return response
 
     def solicitar_rank(self, name):

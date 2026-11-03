@@ -54,7 +54,7 @@ class ReferenceTests(unittest.TestCase):
 
         self.assertEqual(rank_reply["rank"], 1)
         self.assertTrue(heartbeat_reply["ok"])
-        self.assertIn("server_time_unix_ms", heartbeat_reply)
+        self.assertNotIn("server_time_unix_ms", heartbeat_reply)
         self.assertGreater(heartbeat_reply["logical_clock"], rank_reply["logical_clock"])
         self.assertGreater(heartbeat_reply["sent_at_unix_ms"], 0)
         self.assertTrue(heartbeat_reply["message_id"])

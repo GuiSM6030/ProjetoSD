@@ -84,7 +84,6 @@ class ReferenceService:
             rank = request.get("rank")
             if not isinstance(rank, int) or not self.registry.heartbeat(name, rank):
                 response.update(ok=False, detail="Servidor ou rank não cadastrado.")
-            response["server_time_unix_ms"] = unix_time_ms()
         else:
             response.update(ok=False, detail="Ação desconhecida.")
 
