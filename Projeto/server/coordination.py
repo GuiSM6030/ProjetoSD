@@ -31,6 +31,7 @@ class ServerCoordinator:
         physical_clock,
         publisher,
         timeout_ms=700,
+        replication_store=None,
     ):
         self.context = context
         self.server_id = server_id
@@ -43,6 +44,7 @@ class ServerCoordinator:
         self.failed_servers = set()
         self.coordinator_name = None
         self.messages_since_sync = 0
+        self.replication_store = replication_store
 
     def _message(self, payload):
         message = dict(payload)
@@ -65,7 +67,7 @@ class ServerCoordinator:
         socket.setsockopt(zmq.LINGER, 0)
         socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
         socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
-        socket.connect(f"tcp://{server_name}:5560")
+        socket.connect(f"tcp://{server_name}:5561")
         try:
             print(f"REQ servidor {server_name}: {request}", flush=True)
             socket.send_json(request)
@@ -179,6 +181,17 @@ class ServerCoordinator:
                 response.update(ok=False, detail="Anúncio direcionado a outro servidor.")
             else:
                 self.announce_coordinator()
+        elif action == "replicate_apply":
+            events = request.get("events", [])
+            applied = []
+            if self.replication_store is not None:
+                for event in events if isinstance(events, list) else []:
+                    if self.replication_store.apply_replication_event(event):
+                        applied.append(event.get("event_id"))
+            response.update(applied=[item for item in applied if item])
+        elif action == "replicate_pull":
+            if self.replication_store is not None:
+                response["events"] = self.replication_store.replication_events()
         elif action == "clock_report":
             response["server_time_unix_ms"] = self.physical_clock.now_ms()
         elif action == "clock":
@@ -255,6 +268,31 @@ class ServerCoordinator:
             return False
         self.messages_since_sync -= 15
         return True
+
+    def synchronize_replication(self):
+        if self.replication_store is None:
+            return
+        for server in self._eligible_servers():
+            name = server["name"]
+            if name == self.server_id:
+                continue
+            remote = self.request_peer(name, {"action": "replicate_pull"})
+            if remote and remote.get("ok"):
+                for event in remote.get("events", []):
+                    self.replication_store.apply_replication_event(event)
+            pending = self.replication_store.pending_replication_events_for(name)
+            if pending:
+                response = self.request_peer(name, {
+                    "action": "replicate_apply",
+                    "events": pending,
+                })
+                if response and response.get("ok"):
+                    delivered = set(response.get("applied", []))
+                    for event in pending:
+                        if event["event_id"] in delivered:
+                            self.replication_store.mark_delivered(
+                                event["event_id"], name, unix_time_ms()
+                            )
 
     def synchronize_clock(self):
         if not self.coordinator_name:

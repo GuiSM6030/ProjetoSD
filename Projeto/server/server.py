@@ -12,6 +12,7 @@ import bbs_pb2
 from clocks import LogicalClock, PhysicalClockOffset, unix_time_ms
 from server.coordination import ServerCoordinator
 from server.reference_client import ReferenceClient
+from server.replication import ReplicationWorker
 from .store import Store
 
 
@@ -34,7 +35,7 @@ def criar_mensagem(relogio_logico=None, relogio_fisico=None):
 
 def processar_mensagem(
     cliente_id, mensagem, dados, usuarios, publisher=None,
-    relogio_logico=None, relogio_fisico=None,
+    relogio_logico=None, relogio_fisico=None, origin="unknown",
 ):
     if relogio_logico is not None:
         relogio_logico.on_receive(mensagem.logical_clock)
@@ -67,7 +68,10 @@ def processar_mensagem(
                 "Use de 1 a 32 letras, números, '_' ou '-'."
             )
         else:
-            dados.record_login(nome, mensagem.sent_at_unix_ms)
+            dados.record_login(
+                nome, mensagem.sent_at_unix_ms,
+                event_id=f"login:{mensagem.message_id}", origin=origin,
+            )
             usuarios[cliente_id] = nome
             resposta.login_response.accepted = True
             resposta.login_response.detail = "Login realizado."
@@ -91,7 +95,8 @@ def processar_mensagem(
                 "use letras, números, '_' ou '-'."
             )
         elif dados.create_channel(
-            nome, usuarios[cliente_id], mensagem.sent_at_unix_ms
+            nome, usuarios[cliente_id], mensagem.sent_at_unix_ms,
+            event_id=f"channel:{mensagem.message_id}", origin=origin,
         ):
             resposta.create_channel_response.created = True
             resposta.create_channel_response.detail = "Canal criado."
@@ -115,10 +120,11 @@ def processar_mensagem(
                 usuarios[cliente_id], pedido.channel_name, pedido.content,
                 mensagem.sent_at_unix_ms,
                 relogio_fisico.now_ms() if relogio_fisico else unix_time_ms(),
+                origin=origin,
             )
             dados.record_publication(
                 mensagem.message_id, pedido.channel_name, usuarios[cliente_id],
-                pedido.content, mensagem.sent_at_unix_ms,
+                pedido.content, mensagem.sent_at_unix_ms, origin=origin,
             )
             if publisher is not None:
                 publicacao = criar_mensagem(relogio_logico, relogio_fisico)
@@ -185,8 +191,11 @@ def executar():
     control_socket = context.socket(zmq.REP)
     control_socket.setsockopt(zmq.LINGER, 0)
     control_socket.bind(os.environ.get(
-        "SERVER_CONTROL_ENDPOINT", "tcp://*:5560"
+        "SERVER_CONTROL_ENDPOINT", "tcp://*:5561"
     ))
+    replication_socket = context.socket(zmq.REP)
+    replication_socket.setsockopt(zmq.LINGER, 0)
+    replication_socket.bind("tcp://*:5560")
 
     coordenacao = ServerCoordinator(
         context,
@@ -196,12 +205,38 @@ def executar():
         relogio_fisico,
         publisher,
         timeout_ms=int(os.environ.get("SERVER_CONTROL_TIMEOUT_MS", "700")),
+        replication_store=dados,
     )
+    if servidores_disponiveis is None:
+        servidores_disponiveis = [
+            {"name": nome, "rank": indice}
+            for indice, nome in enumerate(
+                [
+                    item.strip()
+                    for item in os.environ.get(
+                        "SERVER_IDS", "server-1,server-2"
+                    ).split(",")
+                    if item.strip()
+                ],
+                start=1,
+            )
+        ]
     coordenacao.update_servers(servidores_disponiveis)
+    replication_worker = ReplicationWorker(
+        arquivo,
+        servidor_id,
+        [item.strip() for item in os.environ.get(
+            "SERVER_IDS", "server-1,server-2"
+        ).split(",") if item.strip()],
+        timeout_ms=int(os.environ.get("SERVER_CONTROL_TIMEOUT_MS", "3000")),
+    )
+    if os.environ.get("REPLICATION_WORKER_ENABLED", "1") == "1":
+        replication_worker.start()
 
     poller = zmq.Poller()
     poller.register(socket, zmq.POLLIN)
     poller.register(control_socket, zmq.POLLIN)
+    poller.register(replication_socket, zmq.POLLIN)
     poller.register(subscriber, zmq.POLLIN)
 
     signal.signal(signal.SIGTERM, parar)
@@ -216,8 +251,9 @@ def executar():
             coordenacao.rank = rank or 0
         referencia.enviar_heartbeat(servidor_id, rank)
         servidores_atualizados = referencia.solicitar_lista()
-        if servidores_atualizados is not None:
-            coordenacao.update_servers(servidores_atualizados)
+        if servidores_atualizados is None:
+            servidores_atualizados = servidores_disponiveis
+        coordenacao.update_servers(servidores_atualizados)
 
     def sincronizar_relogio_se_necessario():
         if coordenacao.synchronization_due():
@@ -239,6 +275,28 @@ def executar():
                 )
                 control_socket.send_json(resposta_controle)
                 coordenacao.note_message()
+
+            if replication_socket in eventos:
+                pedido_replicacao = replication_socket.recv_json()
+                if pedido_replicacao.get("action") == "replicate_pull":
+                    replication_socket.send_json({
+                        "ok": True,
+                        "events": dados.replication_events(),
+                    })
+                elif pedido_replicacao.get("action") == "replicate_apply":
+                    applied = []
+                    for event in pedido_replicacao.get("events", []):
+                        if dados.apply_replication_event(event):
+                            applied.append(event.get("event_id"))
+                    replication_socket.send_json({
+                        "ok": True,
+                        "applied": [item for item in applied if item],
+                    })
+                else:
+                    replication_socket.send_json({
+                        "ok": False,
+                        "detail": "Ação desconhecida.",
+                    })
 
             if subscriber in eventos:
                 frames_pubsub = subscriber.recv_multipart()
@@ -289,7 +347,7 @@ def executar():
             )
             resposta = processar_mensagem(
                 cliente_id, mensagem, dados, usuarios, publisher,
-                relogio_logico, relogio_fisico,
+                relogio_logico, relogio_fisico, servidor_id,
             )
             print(
                 f"ENVIADO ao cliente "
@@ -303,10 +361,13 @@ def executar():
                 sincronizar_referencia()
             sincronizar_relogio_se_necessario()
     finally:
+        if os.environ.get("REPLICATION_WORKER_ENABLED", "1") == "1":
+            replication_worker.stop()
         socket.close(0)
         publisher.close(0)
         subscriber.close(0)
         control_socket.close(0)
+        replication_socket.close(0)
         context.term()
         dados.close()
 

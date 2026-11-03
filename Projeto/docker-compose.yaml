@@ -38,6 +38,8 @@ services:
       DATABASE_PATH: /data/server.sqlite3
       PUBSUB_XSUB: tcp://pubsub-proxy:5557
       REFERENCE_ENDPOINT: tcp://reference:5559
+      SERVER_CONTROL_TIMEOUT_MS: "3000"
+      SERVER_IDS: server-1,server-2
     volumes:
       - server-1-data:/data
     depends_on:
@@ -57,6 +59,8 @@ services:
       DATABASE_PATH: /data/server.sqlite3
       PUBSUB_XSUB: tcp://pubsub-proxy:5557
       REFERENCE_ENDPOINT: tcp://reference:5559
+      SERVER_CONTROL_TIMEOUT_MS: "3000"
+      SERVER_IDS: server-1,server-2
     volumes:
       - server-2-data:/data
     depends_on:
