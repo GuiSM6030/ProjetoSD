@@ -6,6 +6,7 @@ ENV PYTHONPATH=/app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY clocks.py reference.py ./
 COPY protocol/bbs.proto protocol/bbs.proto
 RUN python -m grpc_tools.protoc -Iprotocol --python_out=. protocol/bbs.proto
 

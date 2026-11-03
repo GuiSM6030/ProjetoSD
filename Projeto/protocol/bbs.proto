@@ -5,6 +5,7 @@ package bbs;
 message Envelope {
   int64 sent_at_unix_ms = 1;
   string message_id = 2;
+  uint64 logical_clock = 3;
 
   oneof payload {
     LoginRequest login_request = 10;

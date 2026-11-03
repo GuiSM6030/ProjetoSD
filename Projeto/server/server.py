@@ -8,6 +8,8 @@ from google.protobuf import text_format
 from google.protobuf.message import DecodeError
 
 import bbs_pb2
+from clocks import LogicalClock, PhysicalClockOffset, unix_time_ms
+from server.reference_client import ReferenceClient
 from .store import Store
 
 
@@ -16,21 +18,42 @@ canal_valido = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
 executando = True
 
 
-def criar_mensagem():
+def criar_mensagem(relogio_logico=None, relogio_fisico=None):
     return bbs_pb2.Envelope(
-        sent_at_unix_ms=time.time_ns() // 1_000_000,
+        sent_at_unix_ms=(
+            relogio_fisico.now_ms() if relogio_fisico else unix_time_ms()
+        ),
         message_id=f"server-{time.time_ns()}",
+        logical_clock=(
+            relogio_logico.before_send() if relogio_logico else 0
+        ),
     )
 
 
-def processar_mensagem(cliente_id, mensagem, dados, usuarios, publisher=None):
-    resposta = criar_mensagem()
+def processar_mensagem(
+    cliente_id, mensagem, dados, usuarios, publisher=None,
+    relogio_logico=None, relogio_fisico=None,
+):
+    if relogio_logico is not None:
+        relogio_logico.on_receive(mensagem.logical_clock)
+    resposta = bbs_pb2.Envelope()
+
+    def finalizar_resposta():
+        resposta.sent_at_unix_ms = (
+            relogio_fisico.now_ms() if relogio_fisico else unix_time_ms()
+        )
+        resposta.message_id = f"server-{time.time_ns()}"
+        resposta.logical_clock = (
+            relogio_logico.before_send() if relogio_logico else 0
+        )
+        return resposta
+
     if mensagem.sent_at_unix_ms <= 0:
         resposta.error_response.error_code = "MISSING_TIMESTAMP"
         resposta.error_response.detail = (
             "Toda mensagem deve incluir um timestamp de envio válido."
         )
-        return resposta
+        return finalizar_resposta()
 
     tipo = mensagem.WhichOneof("payload")
 
@@ -46,7 +69,7 @@ def processar_mensagem(cliente_id, mensagem, dados, usuarios, publisher=None):
             usuarios[cliente_id] = nome
             resposta.login_response.accepted = True
             resposta.login_response.detail = "Login realizado."
-        return resposta
+        return finalizar_resposta()
 
     if cliente_id not in usuarios:
         resposta.error_response.error_code = "LOGIN_REQUIRED"
@@ -88,14 +111,15 @@ def processar_mensagem(cliente_id, mensagem, dados, usuarios, publisher=None):
             dados.record_exchange(
                 "client_to_server", "publish_request", mensagem.message_id,
                 usuarios[cliente_id], pedido.channel_name, pedido.content,
-                mensagem.sent_at_unix_ms, time.time_ns() // 1_000_000,
+                mensagem.sent_at_unix_ms,
+                relogio_fisico.now_ms() if relogio_fisico else unix_time_ms(),
             )
             dados.record_publication(
                 mensagem.message_id, pedido.channel_name, usuarios[cliente_id],
                 pedido.content, mensagem.sent_at_unix_ms,
             )
             if publisher is not None:
-                publicacao = criar_mensagem()
+                publicacao = criar_mensagem(relogio_logico, relogio_fisico)
                 publicacao.publication.channel_name = pedido.channel_name
                 publicacao.publication.content = pedido.content
                 publicacao.message_id = mensagem.message_id
@@ -109,7 +133,7 @@ def processar_mensagem(cliente_id, mensagem, dados, usuarios, publisher=None):
         resposta.error_response.error_code = "UNKNOWN_REQUEST"
         resposta.error_response.detail = "Tipo de mensagem não reconhecido."
 
-    return resposta
+    return finalizar_resposta()
 
 
 def parar(_sinal, _quadro):
@@ -123,10 +147,25 @@ def executar():
     servidor_id = os.environ.get("SERVER_ID", "server-1")
     endereco = os.environ.get("BROKER_BACKEND", "tcp://broker:5556")
     arquivo = os.environ.get("DATABASE_PATH", "/data/server.sqlite3")
+    referencia_endpoint = os.environ.get(
+        "REFERENCE_ENDPOINT", "tcp://reference:5559"
+    )
     dados = Store(arquivo)
     usuarios = {}
+    relogio_logico = LogicalClock()
+    relogio_fisico = PhysicalClockOffset()
 
     context = zmq.Context()
+    referencia = ReferenceClient(
+        context,
+        referencia_endpoint,
+        relogio_logico,
+        relogio_fisico,
+        timeout_ms=int(os.environ.get("REFERENCE_TIMEOUT_MS", "1000")),
+    )
+    rank = referencia.solicitar_rank(servidor_id)
+    referencia.solicitar_lista()
+
     socket = context.socket(zmq.DEALER)
     socket.setsockopt(zmq.LINGER, 0)
     socket.connect(endereco)
@@ -139,6 +178,14 @@ def executar():
     signal.signal(signal.SIGTERM, parar)
     signal.signal(signal.SIGINT, parar)
     print(f"Servidor {servidor_id} conectado ao broker.", flush=True)
+    mensagens_recebidas = 0
+
+    def sincronizar_referencia():
+        nonlocal rank
+        if rank is None:
+            rank = referencia.solicitar_rank(servidor_id)
+        referencia.enviar_heartbeat(servidor_id, rank)
+        referencia.solicitar_lista()
 
     try:
         while executando:
@@ -153,12 +200,13 @@ def executar():
                 continue
 
             cliente_id, conteudo = frames
+            mensagens_recebidas += 1
             mensagem = bbs_pb2.Envelope()
             try:
                 mensagem.ParseFromString(conteudo)
             except DecodeError as erro:
                 print(f"Protobuf inválido: {erro}", flush=True)
-                resposta = criar_mensagem()
+                resposta = criar_mensagem(relogio_logico, relogio_fisico)
                 resposta.error_response.error_code = "INVALID_PROTOBUF"
                 resposta.error_response.detail = (
                     "A mensagem não é um Envelope Protobuf válido."
@@ -166,6 +214,8 @@ def executar():
                 socket.send_multipart(
                     [cliente_id, resposta.SerializeToString()]
                 )
+                if mensagens_recebidas % 10 == 0:
+                    sincronizar_referencia()
                 continue
 
             print(
@@ -175,7 +225,8 @@ def executar():
                 flush=True,
             )
             resposta = processar_mensagem(
-                cliente_id, mensagem, dados, usuarios, publisher
+                cliente_id, mensagem, dados, usuarios, publisher,
+                relogio_logico, relogio_fisico,
             )
             print(
                 f"ENVIADO ao cliente "
@@ -184,6 +235,8 @@ def executar():
                 flush=True,
             )
             socket.send_multipart([cliente_id, resposta.SerializeToString()])
+            if mensagens_recebidas % 10 == 0:
+                sincronizar_referencia()
     finally:
         socket.close(0)
         publisher.close(0)

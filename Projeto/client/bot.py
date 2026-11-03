@@ -7,6 +7,7 @@ import zmq
 from google.protobuf import text_format
 
 import bbs_pb2
+from clocks import LogicalClock, unix_time_ms
 
 
 usuario = os.environ.get("BOT_NAME", "bot-alice")
@@ -22,12 +23,14 @@ timeout = int(os.environ.get("REQUEST_TIMEOUT_MS", "1500"))
 cliente_id = f"{usuario}-{uuid.uuid4().hex[:8]}"
 context = zmq.Context()
 servidor_atual = None
+relogio_logico = LogicalClock()
 
 
 def criar_mensagem(tipo, dados):
     mensagem = bbs_pb2.Envelope(
-        sent_at_unix_ms=time.time_ns() // 1_000_000,
+        sent_at_unix_ms=unix_time_ms(),
         message_id=str(uuid.uuid4()),
+        logical_clock=relogio_logico.before_send(),
     )
     getattr(mensagem, tipo).CopyFrom(dados)
     return mensagem
@@ -49,6 +52,7 @@ def enviar_mensagem(servidor_id, mensagem):
         socket.send_multipart([servidor_id.encode("utf-8"), mensagem.SerializeToString()])
         resposta = bbs_pb2.Envelope()
         resposta.ParseFromString(socket.recv())
+        relogio_logico.on_receive(resposta.logical_clock)
         print(
             f"RECEBIDO de {servidor_id}:\n"
             f"{text_format.MessageToString(resposta).strip()}",
@@ -167,6 +171,7 @@ def receber(subscriber):
         canal = frames[0].decode("utf-8", errors="replace")
         publicacao = bbs_pb2.Envelope()
         publicacao.ParseFromString(frames[1])
+        relogio_logico.on_receive(publicacao.logical_clock)
         recebido_em = time.time_ns() // 1_000_000
         print(
             f"RECEBIDO canal={canal} conteúdo={publicacao.publication.content} "

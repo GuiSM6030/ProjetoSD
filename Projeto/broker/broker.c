@@ -21,6 +21,39 @@ static zmq_msg_t *find_server_route(const char *name, size_t name_size) {
     return NULL;
 }
 
+static int register_server(const char *name, size_t name_size,
+                           zmq_msg_t *route) {
+    size_t index = server_count;
+    int is_new = 1;
+    for (size_t i = 0; i < server_count; ++i) {
+        if (name_size == server_name_sizes[i] &&
+            memcmp(server_names[i], name, name_size) == 0) {
+            index = i;
+            is_new = 0;
+            zmq_msg_close(&server_routes[index]);
+            break;
+        }
+    }
+
+    if (index == server_count) {
+        if (server_count == MAX_SERVERS) {
+            return -1;
+        }
+        ++server_count;
+    }
+
+    memcpy(server_names[index], name, name_size);
+    server_names[index][name_size] = '\0';
+    server_name_sizes[index] = name_size;
+    size_t route_size = zmq_msg_size(route);
+    if (zmq_msg_init_size(&server_routes[index], route_size) != 0) {
+        --server_count;
+        return -1;
+    }
+    memcpy(zmq_msg_data(&server_routes[index]), zmq_msg_data(route), route_size);
+    return is_new;
+}
+
 static int receive_frames(void *socket, zmq_msg_t frames[MAX_FRAMES],
                           size_t *frame_count) {
     *frame_count = 0;
@@ -157,27 +190,32 @@ int main(void) {
                     fprintf(stderr, " [%zu:%zu]", i, zmq_msg_size(&frames[i]));
                 }
                 fprintf(stderr, "\n");
-                if (count == 3) {
+                if (count == 3 && zmq_msg_size(&frames[1]) == 5 &&
+                    memcmp(zmq_msg_data(&frames[1]), "READY", 5) == 0) {
+                    size_t name_size = zmq_msg_size(&frames[2]);
+                    if (name_size > 0 && name_size < sizeof(server_names[0])) {
+                        int registration = register_server(
+                            zmq_msg_data(&frames[2]), name_size, &frames[0]
+                        );
+                        if (registration == 1) {
+                            printf("Servidor registrado: %.*s\n",
+                                   (int)name_size,
+                                   (char *)zmq_msg_data(&frames[2]));
+                            fflush(stdout);
+                        } else if (registration < 0) {
+                            fprintf(stderr,
+                                    "Não foi possível registrar servidor %.*s.\n",
+                                    (int)name_size,
+                                    (char *)zmq_msg_data(&frames[2]));
+                        }
+                    } else {
+                        fprintf(stderr, "Nome de servidor inválido.\n");
+                    }
+                } else if (count == 3) {
                     if (send_frame(frontend, &frames[1], 1) == 0 &&
                         zmq_send(frontend, "", 0, ZMQ_SNDMORE) >= 0) {
                         (void)send_frame(frontend, &frames[2], 0);
                     }
-                } else if (count == 3 && zmq_msg_size(&frames[1]) == 5 &&
-                           memcmp(zmq_msg_data(&frames[1]), "READY", 5) == 0) {
-                    size_t name_size = zmq_msg_size(&frames[2]);
-                    if (name_size > 0 && name_size < sizeof(server_names[0]) &&
-                        server_count < MAX_SERVERS) {
-                        memcpy(server_names[server_count], zmq_msg_data(&frames[2]), name_size);
-                        server_names[server_count][name_size] = '\0';
-                        server_name_sizes[server_count] = name_size;
-                        zmq_msg_init_size(&server_routes[server_count], zmq_msg_size(&frames[0]));
-                        memcpy(zmq_msg_data(&server_routes[server_count]),
-                               zmq_msg_data(&frames[0]), zmq_msg_size(&frames[0]));
-                        ++server_count;
-                    }
-                    printf("Servidor registrado: %.*s\n",
-                           (int)name_size, (char *)zmq_msg_data(&frames[2]));
-                    fflush(stdout);
                 } else {
                     fprintf(stderr, "REP inválido: esperado 3 frames, recebido %zu.\n", count);
                 }

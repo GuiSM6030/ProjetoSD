@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 
 import bbs_pb2
+from clocks import LogicalClock
+from client import bot
 from server.server import processar_mensagem
 from server.store import Store
 
@@ -116,6 +118,32 @@ class BbsServerTests(unittest.TestCase):
         self.assertEqual(response.error_response.error_code, "MISSING_TIMESTAMP")
         self.assertGreater(response.sent_at_unix_ms, 0)
 
+    def test_server_receives_then_advances_logical_clock_before_reply(self) -> None:
+        clock = LogicalClock()
+        response = processar_mensagem(
+            self.client_id,
+            bbs_pb2.Envelope(
+                sent_at_unix_ms=1,
+                logical_clock=12,
+                login_request=bbs_pb2.LoginRequest(username="bot_test"),
+            ),
+            self.dados,
+            self.usuarios,
+            relogio_logico=clock,
+        )
+
+        self.assertEqual(clock.value, 14)
+        self.assertEqual(response.logical_clock, 14)
+
+    def test_bot_increments_clock_when_creating_outgoing_envelope(self) -> None:
+        bot.relogio_logico = LogicalClock()
+
+        message = bot.criar_mensagem(
+            "list_channels_request", bbs_pb2.ListChannelsRequest()
+        )
+
+        self.assertEqual(message.logical_clock, 1)
+
     def test_publish_requires_login_existing_channel_and_valid_content(self) -> None:
         request = bbs_pb2.Envelope(
             sent_at_unix_ms=10,
@@ -174,11 +202,13 @@ class BbsServerTests(unittest.TestCase):
                 self.frames = frames
 
         publisher = Publisher()
+        logical_clock = LogicalClock()
         response = processar_mensagem(
             self.client_id,
             bbs_pb2.Envelope(
                 sent_at_unix_ms=123,
                 message_id="request-123",
+                logical_clock=7,
                 publish_request=bbs_pb2.PublishRequest(
                     channel_name="geral", content="evento persistido"
                 ),
@@ -186,6 +216,7 @@ class BbsServerTests(unittest.TestCase):
             self.dados,
             self.usuarios,
             publisher,
+            logical_clock,
         )
         self.assertTrue(response.publish_response.published)
         self.assertGreater(response.sent_at_unix_ms, 0)
@@ -195,6 +226,8 @@ class BbsServerTests(unittest.TestCase):
         publication.ParseFromString(publisher.frames[1])
         self.assertEqual(publication.message_id, "request-123")
         self.assertGreater(publication.sent_at_unix_ms, 0)
+        self.assertEqual(publication.logical_clock, 9)
+        self.assertEqual(response.logical_clock, 10)
         self.assertEqual(publication.publication.channel_name, "geral")
         self.assertEqual(publication.publication.content, "evento persistido")
 
