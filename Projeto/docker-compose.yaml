@@ -23,7 +23,7 @@ services:
     command: ["python", "-u", "reference.py"]
     environment:
       REFERENCE_ENDPOINT: tcp://*:5559
-      SERVER_IDS: server-1,server-2
+      SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
       HEARTBEAT_TIMEOUT_SECONDS: "60"
     restart: unless-stopped
 
@@ -39,7 +39,7 @@ services:
       PUBSUB_XSUB: tcp://pubsub-proxy:5557
       REFERENCE_ENDPOINT: tcp://reference:5559
       SERVER_CONTROL_TIMEOUT_MS: "3000"
-      SERVER_IDS: server-1,server-2
+      SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
     volumes:
       - server-1-data:/data
     depends_on:
@@ -60,7 +60,7 @@ services:
       PUBSUB_XSUB: tcp://pubsub-proxy:5557
       REFERENCE_ENDPOINT: tcp://reference:5559
       SERVER_CONTROL_TIMEOUT_MS: "3000"
-      SERVER_IDS: server-1,server-2
+      SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
     volumes:
       - server-2-data:/data
     depends_on:
@@ -78,9 +78,12 @@ services:
       BROKER_BACKEND: tcp://broker:5556
       DATABASE_PATH: /data/java-server-1.sqlite3
       PUBSUB_XSUB: tcp://pubsub-proxy:5557
+      PUBSUB_XPUB: tcp://pubsub-proxy:5558
+      REFERENCE_ENDPOINT: tcp://reference:5559
+      SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
     volumes:
       - java-server-1-data:/data
-    depends_on: [broker, pubsub-proxy]
+    depends_on: [broker, pubsub-proxy, reference]
     restart: unless-stopped
 
   java-server-2:
@@ -92,9 +95,12 @@ services:
       BROKER_BACKEND: tcp://broker:5556
       DATABASE_PATH: /data/java-server-2.sqlite3
       PUBSUB_XSUB: tcp://pubsub-proxy:5557
+      PUBSUB_XPUB: tcp://pubsub-proxy:5558
+      REFERENCE_ENDPOINT: tcp://reference:5559
+      SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
     volumes:
       - java-server-2-data:/data
-    depends_on: [broker, pubsub-proxy]
+    depends_on: [broker, pubsub-proxy, reference]
     restart: unless-stopped
 
   cpp-server-1:
@@ -107,9 +113,12 @@ services:
       BROKER_BACKEND: tcp://broker:5556
       DATABASE_PATH: /data/cpp-server-1.sqlite3
       PUBSUB_XSUB: tcp://pubsub-proxy:5557
+      PUBSUB_XPUB: tcp://pubsub-proxy:5558
+      REFERENCE_ENDPOINT: tcp://reference:5559
+      SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
     volumes:
       - cpp-server-1-data:/data
-    depends_on: [broker, pubsub-proxy]
+    depends_on: [broker, pubsub-proxy, reference]
     restart: unless-stopped
 
   cpp-server-2:
@@ -122,9 +131,12 @@ services:
       BROKER_BACKEND: tcp://broker:5556
       DATABASE_PATH: /data/cpp-server-2.sqlite3
       PUBSUB_XSUB: tcp://pubsub-proxy:5557
+      PUBSUB_XPUB: tcp://pubsub-proxy:5558
+      REFERENCE_ENDPOINT: tcp://reference:5559
+      SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
     volumes:
       - cpp-server-2-data:/data
-    depends_on: [broker, pubsub-proxy]
+    depends_on: [broker, pubsub-proxy, reference]
     restart: unless-stopped
 
   java-bot-1:
@@ -189,7 +201,7 @@ services:
       CHANNEL_NAME: geral
       BROKER_FRONTEND: tcp://broker:5555
       PUBSUB_XPUB: tcp://pubsub-proxy:5558
-      SERVER_IDS: server-1,server-2
+      SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
       REQUEST_TIMEOUT_MS: "1500"
     depends_on:
       - broker
@@ -208,7 +220,7 @@ services:
       CHANNEL_NAME: geral
       BROKER_FRONTEND: tcp://broker:5555
       PUBSUB_XPUB: tcp://pubsub-proxy:5558
-      SERVER_IDS: server-1,server-2
+      SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
       REQUEST_TIMEOUT_MS: "1500"
     depends_on:
       - broker

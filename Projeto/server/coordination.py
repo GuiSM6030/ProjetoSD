@@ -1,9 +1,11 @@
-import json
 import uuid
 
 import zmq
+from google.protobuf.message import DecodeError
 
+import bbs_pb2
 from clocks import unix_time_ms
+from .control import peer_request_to_proto, peer_response_from_proto
 
 
 def choose_coordinator(servers):
@@ -47,17 +49,22 @@ class ServerCoordinator:
         self.replication_store = replication_store
 
     def _message(self, payload):
-        message = dict(payload)
-        message.update(
+        message = bbs_pb2.ControlEnvelope(
             sent_at_unix_ms=self.physical_clock.now_ms(),
             message_id=str(uuid.uuid4()),
             logical_clock=self.logical_clock.before_send(),
         )
+        message.peer_request.CopyFrom(peer_request_to_proto(payload))
         return message
 
     def _receive_clock(self, message):
+        logical_clock = (
+            message.get("logical_clock", 0)
+            if isinstance(message, dict)
+            else message.logical_clock
+        )
         try:
-            self.logical_clock.on_receive(message.get("logical_clock", 0))
+            self.logical_clock.on_receive(logical_clock)
         except (TypeError, ValueError):
             self.logical_clock.on_receive(0)
 
@@ -69,26 +76,38 @@ class ServerCoordinator:
         socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
         socket.connect(f"tcp://{server_name}:5561")
         try:
-            print(f"REQ servidor {server_name}: {request}", flush=True)
-            socket.send_json(request)
+            print(
+                f"REQ servidor {server_name}: {request.peer_request}",
+                flush=True,
+            )
+            socket.send(request.SerializeToString())
             self.note_message()
-            response = socket.recv_json()
-        except (zmq.error.Again, zmq.error.ZMQError, ValueError) as error:
+            response = bbs_pb2.ControlEnvelope()
+            response.ParseFromString(socket.recv())
+        except (
+            zmq.error.Again,
+            zmq.error.ZMQError,
+            DecodeError,
+        ) as error:
             self.failed_servers.add(server_name)
             print(f"Servidor {server_name} indisponível: {error}", flush=True)
             return None
         finally:
             socket.close(0)
 
-        if not isinstance(response, dict):
+        if not response.HasField("peer_response"):
             self.failed_servers.add(server_name)
             return None
         self.note_message()
         self._receive_clock(response)
-        if response.get("ok"):
+        response_data = peer_response_from_proto(response.peer_response)
+        if response_data.get("ok"):
             self.failed_servers.discard(server_name)
-        print(f"REP servidor {server_name}: {response}", flush=True)
-        return response
+        print(
+            f"REP servidor {server_name}: {response.peer_response}",
+            flush=True,
+        )
+        return response_data
 
     def _eligible_servers(self):
         return [
@@ -134,13 +153,16 @@ class ServerCoordinator:
 
     def announce_coordinator(self):
         self.coordinator_name = self.server_id
-        announcement = self._message({
-            "coordinator": self.server_id,
-        })
+        announcement = bbs_pb2.ControlEnvelope(
+            sent_at_unix_ms=self.physical_clock.now_ms(),
+            message_id=str(uuid.uuid4()),
+            logical_clock=self.logical_clock.before_send(),
+        )
+        announcement.coordinator_announcement.coordinator = self.server_id
         try:
             self.publisher.send_multipart([
                 b"servers",
-                json.dumps(announcement).encode("utf-8"),
+                announcement.SerializeToString(),
             ])
             self.messages_since_sync += 1
             print(f"Coordenador anunciado no tópico servers: {self.server_id}.", flush=True)

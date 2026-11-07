@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import Mock
 
+import bbs_pb2
 from clocks import LogicalClock
 from server.coordination import berkeley_average, choose_coordinator
 from server.coordination import ServerCoordinator
@@ -64,7 +65,12 @@ class CoordinationProtocolTests(unittest.TestCase):
 
         frames = self.publisher.send_multipart.call_args.args[0]
         self.assertEqual(frames[0], b"servers")
-        self.assertIn(b'"coordinator": "server-1"', frames[1])
+        announcement = bbs_pb2.ControlEnvelope()
+        announcement.ParseFromString(frames[1])
+        self.assertEqual(
+            announcement.coordinator_announcement.coordinator,
+            "server-1",
+        )
 
     def test_subscriber_accepts_available_coordinator_announcement(self):
         self.coordinator.available_servers = [

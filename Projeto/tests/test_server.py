@@ -237,9 +237,13 @@ class BbsServerTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row, ("request-123", "geral", "evento persistido", 123))
         exchange = self.dados.connection.execute(
-            "SELECT direction, message_type, message_id FROM exchanged_messages"
-        ).fetchone()
-        self.assertEqual(exchange, ("client_to_server", "publish_request", "request-123"))
+            "SELECT direction, message_type, message_id FROM exchanged_messages "
+            "WHERE message_id = 'request-123' ORDER BY direction"
+        ).fetchall()
+        self.assertEqual(exchange, [
+            ("client_to_server", "publish_request", "request-123"),
+            ("server_to_client", "publish_response", "request-123"),
+        ])
 
 
 if __name__ == "__main__":

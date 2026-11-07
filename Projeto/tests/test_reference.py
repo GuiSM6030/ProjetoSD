@@ -1,5 +1,6 @@
 import unittest
 
+import bbs_pb2
 from reference import ReferenceRegistry, ReferenceService
 
 
@@ -40,24 +41,36 @@ class ReferenceTests(unittest.TestCase):
 
     def test_reference_rank_and_heartbeat_replies_have_message_metadata(self):
         service = ReferenceService(self.registry)
-        rank_reply = service.handle({
-            "action": "rank",
-            "name": "server-1",
-            "logical_clock": 4,
-        })
-        heartbeat_reply = service.handle({
-            "action": "heartbeat",
-            "name": "server-1",
-            "rank": 1,
-            "logical_clock": 6,
-        })
+        rank_request = bbs_pb2.ControlEnvelope(
+            sent_at_unix_ms=1,
+            logical_clock=4,
+        )
+        rank_request.reference_request.action = "rank"
+        rank_request.reference_request.name = "server-1"
+        rank_reply = service.handle(rank_request)
+        heartbeat_request = bbs_pb2.ControlEnvelope(
+            sent_at_unix_ms=2,
+            logical_clock=6,
+        )
+        heartbeat_request.reference_request.action = "heartbeat"
+        heartbeat_request.reference_request.name = "server-1"
+        heartbeat_request.reference_request.rank = 1
+        heartbeat_reply = service.handle(heartbeat_request)
 
-        self.assertEqual(rank_reply["rank"], 1)
-        self.assertTrue(heartbeat_reply["ok"])
-        self.assertNotIn("server_time_unix_ms", heartbeat_reply)
-        self.assertGreater(heartbeat_reply["logical_clock"], rank_reply["logical_clock"])
-        self.assertGreater(heartbeat_reply["sent_at_unix_ms"], 0)
-        self.assertTrue(heartbeat_reply["message_id"])
+        self.assertEqual(rank_reply.reference_response.rank, 1)
+        self.assertTrue(heartbeat_reply.reference_response.ok)
+        self.assertEqual(heartbeat_reply.reference_response.ListFields(), [
+            (bbs_pb2.ReferenceResponse.DESCRIPTOR.fields_by_name["ok"], True),
+            (
+                bbs_pb2.ReferenceResponse.DESCRIPTOR.fields_by_name["detail"],
+                "OK",
+            ),
+        ])
+        self.assertGreater(
+            heartbeat_reply.logical_clock, rank_reply.logical_clock
+        )
+        self.assertGreater(heartbeat_reply.sent_at_unix_ms, 0)
+        self.assertTrue(heartbeat_reply.message_id)
 
 
 if __name__ == "__main__":

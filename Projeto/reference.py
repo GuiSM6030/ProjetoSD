@@ -4,7 +4,9 @@ import time
 import uuid
 
 import zmq
+from google.protobuf.message import DecodeError
 
+import bbs_pb2
 from clocks import LogicalClock, unix_time_ms
 
 
@@ -63,35 +65,40 @@ class ReferenceService:
         self.logical_clock = LogicalClock()
 
     def handle(self, request):
-        if not isinstance(request, dict):
-            request = {}
-        try:
-            self.logical_clock.on_receive(request.get("logical_clock", 0))
-        except (TypeError, ValueError):
-            self.logical_clock.on_receive(0)
-
-        action = request.get("action")
-        response = {"ok": True, "detail": "OK"}
+        self.logical_clock.on_receive(request.logical_clock)
+        action = request.reference_request.action
+        details = bbs_pb2.ReferenceResponse(ok=True, detail="OK")
         if action == "rank":
             try:
-                response["rank"] = self.registry.register(request.get("name"))
-            except ValueError as erro:
-                response.update(ok=False, detail=str(erro))
+                details.rank = self.registry.register(
+                    request.reference_request.name
+                )
+            except ValueError as error:
+                details.ok = False
+                details.detail = str(error)
         elif action == "list":
-            response["servers"] = self.registry.list_available()
+            for server in self.registry.list_available():
+                details.servers.add(
+                    name=server["name"],
+                    rank=server["rank"],
+                )
         elif action == "heartbeat":
-            name = request.get("name")
-            rank = request.get("rank")
-            if not isinstance(rank, int) or not self.registry.heartbeat(name, rank):
-                response.update(ok=False, detail="Servidor ou rank não cadastrado.")
+            if not self.registry.heartbeat(
+                request.reference_request.name,
+                request.reference_request.rank,
+            ):
+                details.ok = False
+                details.detail = "Servidor ou rank não cadastrado."
         else:
-            response.update(ok=False, detail="Ação desconhecida.")
+            details.ok = False
+            details.detail = "Ação desconhecida."
 
-        response.update(
+        response = bbs_pb2.ControlEnvelope(
             sent_at_unix_ms=unix_time_ms(),
             message_id=str(uuid.uuid4()),
             logical_clock=self.logical_clock.before_send(),
         )
+        response.reference_response.CopyFrom(details)
         return response
 
 
@@ -128,12 +135,18 @@ def executar():
                 registry.expire()
                 continue
             try:
-                pedido = socket.recv_json()
-            except ValueError:
-                pedido = {}
+                pedido = bbs_pb2.ControlEnvelope()
+                pedido.ParseFromString(socket.recv())
+            except DecodeError:
+                pedido = bbs_pb2.ControlEnvelope()
+                pedido.reference_request.action = "invalid"
             resposta = service.handle(pedido)
-            print(f"REQ {pedido} | REP {resposta}", flush=True)
-            socket.send_json(resposta)
+            print(
+                f"REQ {pedido.reference_request} | "
+                f"REP {resposta.reference_response}",
+                flush=True,
+            )
+            socket.send(resposta.SerializeToString())
             registry.expire()
     finally:
         socket.close(0)

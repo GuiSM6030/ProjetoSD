@@ -1,74 +1,49 @@
 # Projeto de Sistemas Distribuídos
 
-# Projeto de Sistemas Distribuídos
-
 ## Arquitetura
 
-O sistema continua dividido em clientes Python, servidores Python e um broker Req/Rep em C. O broker encaminha pedidos entre as portas `5555` e `5556`. A Parte 2 adiciona um proxy Pub/Sub isolado em `pubsub_proxy.py`, com `XSUB` em `5557` e `XPUB` em `5558`.
+O Compose executa dois clientes e dois servidores por linguagem: Python, Java e C++ orientado a objetos. Portanto, os seis bots e os seis servidores participam da mesma aplicação. O broker Req/Rep é implementado em C e encaminha os pedidos sem interpretar os envelopes.
 
 ```text
-bot (REQ) -> broker 5555 -> servidor (DEALER)
-servidor (PUB) -> proxy XSUB 5557 -> proxy XPUB 5558 -> bot (SUB)
-servidores (REQ/REP) -> referência 5559
+clientes REQ -> broker C :5555 -> servidores DEALER :5556
+servidores PUB :5557 -> proxy XSUB/XPUB -> clientes SUB :5558
+servidores <-> referência REQ/REP :5559
+servidores <-> coordenação Berkeley REQ/REP :5561
+servidores <-> replicação durável REQ/REP :5560
 ```
 
-O nome do canal é usado como tópico e como primeiro frame da publicação. Assim, o bot pode assinar vários canais na mesma conexão SUB. A escolha das assinaturas pertence ao cliente; o servidor não altera as assinaturas.
+Cada servidor tem um arquivo SQLite e volume próprios. Os seis servidores replicam os dados entre si; os serviços Java e C++ não são apenas clientes do servidor Python. O Compose configura todos os bots para tentar os seis servidores.
 
 ## Protocolo
 
-As mensagens entre bots e servidores são envelopes Protobuf definidos em `protocol/bbs.proto`. O `Envelope` inclui `sent_at_unix_ms`, `message_id` e `logical_clock`. Os tipos de publicação são `PublishRequest`, `PublishResponse` e `Publication`:
+`protocol/bbs.proto` define os envelopes Protobuf usados por todas as linguagens. Os pedidos e respostas de login, canais e publicação usam `Envelope`; referência, eleição, relógio, anúncio de coordenador e replicação usam `ControlEnvelope`. Os dois incluem timestamp Unix em milissegundos, identificador e relógio lógico. Todos os conteúdos de aplicação enviados pela rede são serializados em Protobuf binário; nome de servidor e tópico Pub/Sub são frames de roteamento.
 
-1. O bot envia ao servidor `{channel_name, content}` com timestamp e `message_id`.
-2. O servidor verifica login, nome, conteúdo e existência do canal.
-3. Em caso positivo, grava o evento e envia `{topic, Envelope(Publication)}` ao PUB.
-4. O servidor responde com `PublishResponse`. Essa resposta confirma apenas aceitação pelo servidor, não entrega a um assinante.
+1. O cliente envia login, lista canais, cria canais e publica mensagens em canais.
+2. O servidor valida o pedido e exige login para as operações de canal.
+3. Uma publicação aceita é persistida e enviada no tópico com o nome do canal.
+4. `PublishResponse` confirma apenas a aceitação pelo servidor, não a entrega a assinantes.
 
-Uma publicação positiva não é confirmação de recebimento Pub/Sub. A entrega do assinante é observada apenas pela mensagem recebida pelo SUB e pelo timestamp local de recebimento do bot.
+## Relógios e referência
 
-Os timestamps são relógios Unix em milissegundos. O envio usa o relógio do processo que cria o `Envelope`; no recebimento, o bot registra outro timestamp local ao processar o frame. O `message_id` continua identificando/correlacionando a mensagem quando aplicável.
+Clientes e servidores mantêm relógios lógicos Lamport: incrementam antes de enviar e, ao receber, aplicam `max(local, recebido) + 1`. O relógio físico dos servidores aplica um deslocamento local, sem alterar o relógio do sistema.
 
-## Relógios
+O serviço `reference` usa Protobuf binário para atribuir ranks, fornecer a lista de servidores disponíveis e renovar heartbeats. O rank é estável para cada nome durante a execução da referência. Os seis nomes são configurados no Compose. Cada servidor envia heartbeat a cada dez pedidos de clientes recebidos; após 60 segundos sem heartbeat o servidor deixa de aparecer como disponível. Como a cadência depende de pedidos, um servidor ocioso pode expirar.
 
-Cada bot e servidor inicia seu relógio lógico Lamport em zero. Antes de enviar um envelope, incrementa o contador e grava o resultado em `logical_clock`. Ao receber um envelope, atualiza-o para `max(contador_local, logical_clock_recebido) + 1`. Isso vale para pedidos, respostas e publicações; bots também atualizam o contador ao receber respostas e publicações. O campo Protobuf usa o número 3, sem reutilizar os números existentes.
-
-O relógio físico de cada servidor não altera o relógio do sistema. O servidor mantém um deslocamento local aplicado aos timestamps que produz. A referência mantém ranks e heartbeat; o horário Berkeley usado pelo coordenação da eleição é calculado pelos servidores participantes, conforme a Parte 4.
-
-## Referência, ranks e heartbeat
-
-O container `reference` atende apenas os servidores em `tcp://reference:5559`, por REQ/REP com JSON. Os pedidos e respostas carregam horário de envio, `message_id` e relógio lógico; não passam pelo broker nem pelo proxy Pub/Sub. As ações são `rank` (cadastro e atribuição de rank), `list` (servidores disponíveis) e `heartbeat` (renova disponibilidade). O horário corrigido não é fornecido por esse serviço; ele é calculado pelo coordenador da eleição com o algoritmo Berkeley.
-
-Os nomes `server-1` e `server-2` são configurados no Compose em `SERVER_IDS`, portanto recebem ranks estáveis 1 e 2 mesmo que iniciem simultaneamente. Nomes adicionais recebem o próximo rank disponível. Repetir a consulta mantém o mesmo rank. O pedido de lista é feito na inicialização e após cada heartbeat.
-
-O servidor envia heartbeat após cada 10 mensagens de clientes recebidas, incluindo pedidos Protobuf inválidos que chegaram em um frame válido. A referência remove servidores sem heartbeat há mais de 60 segundos da lista disponível; o timeout usa tempo monotônico. O rank fica reservado enquanto a referência estiver em execução, para que uma reconexão do mesmo nome recupere o rank. A consulta de rank cadastra/reativa o servidor. Falhas da referência não param o processamento Req/Rep; o servidor tenta obter o rank novamente no próximo ciclo de heartbeat.
-
-Como a cadência é baseada em mensagens, um servidor ocioso por mais de 60 segundos também sai da lista, mesmo que o processo esteja vivo. O estado de ranks é mantido em memória e é perdido se a referência reiniciar. Na sincronização Berkeley o coordenador coleta horários dos servidores elegíveis, calcula o valor médio inteiro e distribui seus ajustes. Isso não sincroniza diretamente os relógios do host ou do container.
+O servidor de maior rank entre os pares acessíveis coordena a sincronização Berkeley: coleta os horários, calcula a média inteira e a distribui. Uma falha do coordenador dispara nova eleição; o vencedor é anunciado no tópico `servers`. O ajuste de relógio é gradual e não sincroniza os relógios do host ou do container.
 
 ## Comportamento dos bots
 
-Cada bot faz login, consulta os canais e tenta manter pelo menos cinco canais disponíveis. Duplicidades na criação são tratadas por `CHANNEL_EXISTS`. Em seguida, escolhe aleatoriamente canais disponíveis até possuir pelo menos três assinaturas.
+Cada bot faz login, consulta os canais, garante pelo menos cinco canais, escolhe até três canais para inscrição e publica mensagens aleatórias em lotes de dez, com intervalo de um segundo. Os bots exibem os envelopes enviados e recebidos e, para publicações, o tópico e os timestamps.
 
-Depois, o bot escolhe um canal disponível e tenta publicar dez mensagens aleatórias. A recepção SUB é consultada a cada fração do intervalo de um segundo, mantendo-a ativa durante todo o lote. Por limitação do PUB/SUB do ZeroMQ, assinantes lentos ou desconectados podem perder mensagens e não há confirmação nem retransmissão automática pelo proxy.
+PUB/SUB não mantém fila para assinantes desconectados e não fornece confirmação nem retransmissão. Uma mensagem pode ser perdida se um assinante ainda não estiver inscrito ou estiver indisponível.
 
-## Persistência
+## Persistência e consistência
 
-Cada servidor continua tendo seu próprio SQLite e volume. `store.py` cria as tabelas sem apagar os dados existentes. Além de logins e canais, são persistidos:
+Cada servidor persiste localmente logins, canais, publicações e as mensagens de pedido e resposta trocadas com clientes. O Compose monta um volume distinto para cada um dos seis bancos SQLite.
 
-- `publications`: identificação, canal, autor, conteúdo e timestamp enviado;
-- `exchanged_messages`: direção, tipo, correlação, usuário, canal, conteúdo e timestamps enviado/recebido pelo servidor.
+A replicação usa eventos Protobuf e outbox durável no canal interno REQ/REP `5560`. Cada evento local e sua outbox são gravados junto com a operação. O produtor envia eventos pendentes e marca a entrega por destino somente após o ACK. `replicate_pull` recupera o histórico de um servidor que voltou. Os eventos têm identificadores estáveis e são aplicados de forma idempotente, sem eco de eventos recebidos.
 
-As consultas usam parâmetros SQLite.
-
-## Consistência e replicação
-
-Os servidores usam replicação por eventos e outbox durável. Cada operação local é gravada no SQLite e imediatamente registrada em `replication_events` e `replication_outbox` na mesma transação. Os dados replicados são `logins`, `channels`, `publications` e `exchanged_messages`. Isso mantém a origem da operação e permite reenvio após reinício ou falha de rede sem usar o Pub/Sub como transporte durável.
-
-A entrega usa o canal interno REQ/REP em `5560`, já usado pela eleição. O produtor envia `replicate_apply` com eventos pendentes; o peer devolve os `event_id` aplicados. O produtor registra o par `(evento, destino)` em `replication_delivered`, portanto um peer continua recebendo eventos independentemente dos ACKs dos outros. O evento `replicate_pull` também permite recuperar todo o histórico persistido quando um servidor volta, mesmo sem ter estado de outbox de origem.
-
-`event_id` estável identifica login, canal, publicação e troca. A aplicação verifica `replication_applied` antes de inserir qualquer dado. Eventos repetidos são ACKed sem produzir estado novo nem gerar novos eventos, evitando eco infinito.
-
-Para canais concorrentes, o vencedor é determinado pela chave `(created_at_unix_ms, servidor de origem, usuário criador)`, em ordem crescente. Ambos os bancos convergem para o mesmo `created_by` e timestamp, independentemente da ordem dos eventos recebidos. A resposta local original continua válida para a requisição que recebeu o pedido; no caso de empate temporal, a resposta `CHANNEL_EXISTS` pode ser usada pela segunda tentativa local.
-
-A solução oferece convergência eventual, entrega pelo menos uma vez e idempotência. Não oferece transação distribuída nem linearizabilidade global: entre a gravação local e o ACK do peer pode haver divergência temporária. A resposta `published=true` indica aceitação/persistência pelo servidor que processou; não confirma entrega Pub/Sub nem conclusão da replicação para todos os peers.
+Os seis servidores implementam o mesmo formato de evento, permitindo replicação entre Python, Java e C++. Canais concorrentes convergem pela menor chave `(created_at_unix_ms, servidor de origem, usuário criador)`. A solução oferece convergência eventual e entrega pelo menos uma vez; não oferece transação distribuída nem linearizabilidade global. Uma resposta positiva de publicação não garante que todos os pares já tenham recebido o evento.
 
 ## Executar e testar
 
@@ -78,30 +53,25 @@ Na pasta `Projeto/`, execute:
 docker compose up --build
 ```
 
-O Compose inicia o broker, o proxy Pub/Sub, dois servidores e dois bots. Os timestamps enviados e recebidos aparecem nos logs dos bots.
+O comando compila e inicia broker, proxy Pub/Sub, referência, seis servidores e seis bots. Os processos dos bots são contínuos; use `Ctrl+C` para encerrar. Para executar os testes Python e validar os builds:
 
 ```sh
 python -m grpc_tools.protoc -Iprotocol --python_out=. protocol/bbs.proto
 python -m unittest discover -s tests -v
+mvn -f java/pom.xml package
 docker compose config
 docker compose build
 ```
 
-O código Protobuf não é versionado manualmente; ele é gerado pelo `Dockerfile.python` durante o build. `docker compose down -v` remove os volumes e os dados persistidos.
+O código Protobuf Python é gerado durante o build e não é versionado manualmente. `docker compose down -v` também remove os volumes e todos os dados persistidos.
 
-## Limitações ZeroMQ
+## Arquivos principais
 
-PUB/SUB não mantém fila enquanto um assinante está desconectado. O proxy não garante entrega, ordem global entre servidores, persistência de mensagens ou confirmação de recebimento. Uma `PublishResponse` aceita descreve somente o processamento do servidor. Em caso de falha de um servidor, o bot tenta o servidor seguinte, mas o estado permanece distribuído entre bancos separados.
-
-## Arquivos
-
-- `client/bot.py`: login, failover, gestão de canais, assinaturas SUB e publicação.
-- `server/server.py`: processamento Req/Rep, validação, publicação e heartbeat.
-- `server/reference_client.py` e `reference.py`: protocolo servidor-referência e registry.
-- `clocks.py`: relógios lógico e físico com deslocamento local.
-- `server/store.py`: persistência SQLite, outbox durável e aplicação idempotente dos eventos.
-- `server/coordination.py`: eleição, relógio Berkeley e sincronização replicada entre servidores.
-- `pubsub_proxy.py`: transporte Pub/Sub com XSUB/XPUB.
-- `broker/broker.c`: encaminhamento Req/Rep entre clientes e servidores.
-- `protocol/bbs.proto`: contratos Protobuf.
-- `docker-compose.yaml`: configuração dos containers.
+- `client/bot.py`, `java/src/main/java/bbs/JavaBot.java`, `cpp/main.cpp`: clientes Python, Java e C++.
+- `server/server.py`, `java/src/main/java/bbs/JavaServer.java`, `cpp/main.cpp`: servidores Python, Java e C++.
+- `reference.py` e `server/reference_client.py`: registro, ranks e heartbeat.
+- `server/coordination.py`: eleição, sincronização Berkeley e protocolo de pares Python.
+- `server/store.py`: armazenamento SQLite e eventos de replicação Python.
+- `protocol/bbs.proto`: contrato Protobuf comum às três linguagens.
+- `broker/broker.c` e `pubsub_proxy.py`: encaminhamento Req/Rep e proxy XSUB/XPUB.
+- `docker-compose.yaml`: execução das três implementações em conjunto.

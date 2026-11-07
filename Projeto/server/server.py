@@ -1,4 +1,3 @@
-import json
 import os
 import re
 import signal
@@ -13,6 +12,10 @@ from clocks import LogicalClock, PhysicalClockOffset, unix_time_ms
 from server.coordination import ServerCoordinator
 from server.reference_client import ReferenceClient
 from server.replication import ReplicationWorker
+from server.control import (
+    peer_request_from_proto,
+    peer_response_to_proto,
+)
 from .store import Store
 
 
@@ -40,6 +43,7 @@ def processar_mensagem(
     if relogio_logico is not None:
         relogio_logico.on_receive(mensagem.logical_clock)
     resposta = bbs_pb2.Envelope()
+    tipo = mensagem.WhichOneof("payload") or "unknown"
 
     def finalizar_resposta():
         resposta.sent_at_unix_ms = (
@@ -49,6 +53,32 @@ def processar_mensagem(
         resposta.logical_clock = (
             relogio_logico.before_send() if relogio_logico else 0
         )
+        usuario = usuarios.get(cliente_id, "")
+        canal = None
+        conteudo = text_format.MessageToString(mensagem).strip()
+        if tipo == "create_channel_request":
+            canal = mensagem.create_channel_request.name
+        elif tipo == "publish_request":
+            canal = mensagem.publish_request.channel_name
+        recebida_em = (
+            relogio_fisico.now_ms() if relogio_fisico else unix_time_ms()
+        )
+        dados.record_exchange(
+            "client_to_server",
+            tipo if tipo.endswith("_request") else f"{tipo}_request",
+            mensagem.message_id,
+            usuario, canal, conteudo, mensagem.sent_at_unix_ms,
+            recebida_em, origin=origin,
+        )
+        response_type = resposta.WhichOneof("payload") or "unknown"
+        dados.record_exchange(
+            "server_to_client",
+            response_type if response_type.endswith("_response")
+            else f"{response_type}_response",
+            mensagem.message_id, usuario, canal,
+            text_format.MessageToString(resposta).strip(),
+            resposta.sent_at_unix_ms, recebida_em, origin=origin,
+        )
         return resposta
 
     if mensagem.sent_at_unix_ms <= 0:
@@ -57,8 +87,6 @@ def processar_mensagem(
             "Toda mensagem deve incluir um timestamp de envio válido."
         )
         return finalizar_resposta()
-
-    tipo = mensagem.WhichOneof("payload")
 
     if tipo == "login_request":
         nome = mensagem.login_request.username
@@ -115,13 +143,6 @@ def processar_mensagem(
             resposta.publish_response.error_code = "CHANNEL_NOT_FOUND"
             resposta.publish_response.detail = "O canal não existe neste servidor."
         else:
-            dados.record_exchange(
-                "client_to_server", "publish_request", mensagem.message_id,
-                usuarios[cliente_id], pedido.channel_name, pedido.content,
-                mensagem.sent_at_unix_ms,
-                relogio_fisico.now_ms() if relogio_fisico else unix_time_ms(),
-                origin=origin,
-            )
             dados.record_publication(
                 mensagem.message_id, pedido.channel_name, usuarios[cliente_id],
                 pedido.content, mensagem.sent_at_unix_ms, origin=origin,
@@ -266,47 +287,98 @@ def executar():
 
             if control_socket in eventos:
                 try:
-                    pedido_controle = control_socket.recv_json()
-                except ValueError:
-                    pedido_controle = {}
+                    pedido_controle = bbs_pb2.ControlEnvelope()
+                    pedido_controle.ParseFromString(control_socket.recv())
+                    request_data = peer_request_from_proto(
+                        pedido_controle.peer_request
+                    )
+                    request_data["logical_clock"] = (
+                        pedido_controle.logical_clock
+                    )
+                except DecodeError:
+                    request_data = {"action": "invalid"}
                 coordenacao.note_message()
-                resposta_controle = coordenacao.handle_peer_request(
-                    pedido_controle
+                response_data = coordenacao.handle_peer_request(request_data)
+                resposta_controle = bbs_pb2.ControlEnvelope(
+                    sent_at_unix_ms=response_data.get(
+                        "sent_at_unix_ms", relogio_fisico.now_ms()
+                    ),
+                    message_id=response_data.get(
+                        "message_id", f"server-{time.time_ns()}"
+                    ),
+                    logical_clock=response_data.get(
+                        "logical_clock", relogio_logico.before_send()
+                    ),
                 )
-                control_socket.send_json(resposta_controle)
+                resposta_controle.peer_response.CopyFrom(
+                    peer_response_to_proto(response_data)
+                )
+                control_socket.send(resposta_controle.SerializeToString())
                 coordenacao.note_message()
 
             if replication_socket in eventos:
-                pedido_replicacao = replication_socket.recv_json()
-                if pedido_replicacao.get("action") == "replicate_pull":
-                    replication_socket.send_json({
+                pedido_replicacao = bbs_pb2.ControlEnvelope()
+                try:
+                    pedido_replicacao.ParseFromString(
+                        replication_socket.recv()
+                    )
+                    replication_data = peer_request_from_proto(
+                        pedido_replicacao.peer_request
+                    )
+                    replication_data["logical_clock"] = (
+                        pedido_replicacao.logical_clock
+                    )
+                except DecodeError:
+                    replication_data = {"action": "invalid"}
+                if replication_data.get("action") == "replicate_pull":
+                    response_data = {
                         "ok": True,
                         "events": dados.replication_events(),
-                    })
-                elif pedido_replicacao.get("action") == "replicate_apply":
+                    }
+                elif replication_data.get("action") == "replicate_apply":
                     applied = []
-                    for event in pedido_replicacao.get("events", []):
+                    for event in replication_data.get("events", []):
                         if dados.apply_replication_event(event):
                             applied.append(event.get("event_id"))
-                    replication_socket.send_json({
+                    response_data = {
                         "ok": True,
                         "applied": [item for item in applied if item],
-                    })
+                    }
                 else:
-                    replication_socket.send_json({
+                    response_data = {
                         "ok": False,
                         "detail": "Ação desconhecida.",
-                    })
+                    }
+                resposta_replicacao = bbs_pb2.ControlEnvelope(
+                    sent_at_unix_ms=relogio_fisico.now_ms(),
+                    message_id=f"server-{time.time_ns()}",
+                    logical_clock=relogio_logico.before_send(),
+                )
+                resposta_replicacao.peer_response.CopyFrom(
+                    peer_response_to_proto(response_data)
+                )
+                replication_socket.send(
+                    resposta_replicacao.SerializeToString()
+                )
 
             if subscriber in eventos:
                 frames_pubsub = subscriber.recv_multipart()
                 if len(frames_pubsub) == 2 and frames_pubsub[0] == b"servers":
                     coordenacao.note_message()
                     try:
-                        anuncio = json.loads(frames_pubsub[1].decode("utf-8"))
-                    except (UnicodeDecodeError, ValueError):
-                        anuncio = {}
-                    coordenacao.receive_announcement(anuncio)
+                        anuncio = bbs_pb2.ControlEnvelope()
+                        anuncio.ParseFromString(frames_pubsub[1])
+                    except DecodeError:
+                        anuncio = None
+                    if anuncio and anuncio.HasField(
+                        "coordinator_announcement"
+                    ):
+                        coordenacao.receive_announcement({
+                            "coordinator": (
+                                anuncio.coordinator_announcement.coordinator
+                            ),
+                            "logical_clock": anuncio.logical_clock,
+                        })
 
             if socket not in eventos:
                 sincronizar_relogio_se_necessario()

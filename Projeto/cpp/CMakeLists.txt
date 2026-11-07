@@ -8,5 +8,8 @@ find_library(ZMQ_LIBRARY zmq)
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/generated)
 protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS ../protocol/bbs.proto)
 add_executable(bbs_cpp main.cpp ${PROTO_SRCS})
-target_include_directories(bbs_cpp PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_include_directories(bbs_cpp PRIVATE
+  ${CMAKE_CURRENT_BINARY_DIR}
+  ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
 target_link_libraries(bbs_cpp PRIVATE protobuf::libprotobuf ${ZMQ_LIBRARY} pthread sqlite3)

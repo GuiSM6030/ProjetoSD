@@ -1,9 +1,17 @@
-import json
 import threading
 import time
+import uuid
 
 import zmq
+from google.protobuf.message import DecodeError
 
+import bbs_pb2
+from clocks import LogicalClock, unix_time_ms
+from .control import (
+    event_from_proto,
+    peer_request_to_proto,
+    peer_response_from_proto,
+)
 from .store import Store
 
 
@@ -33,27 +41,71 @@ class ReplicationResponder:
                 if not socket.poll(500, zmq.POLLIN):
                     continue
                 try:
-                    request = socket.recv_json()
-                    print(f"Replicação recebida: {request.get('action')}", flush=True)
-                except (ValueError, zmq.error.ZMQError):
+                    request = bbs_pb2.ControlEnvelope()
+                    request.ParseFromString(socket.recv())
+                    print(
+                        "Replicação recebida: "
+                        f"{request.peer_request.action}",
+                        flush=True,
+                    )
+                except DecodeError:
+                    response = bbs_pb2.ControlEnvelope(
+                        sent_at_unix_ms=unix_time_ms(),
+                        message_id=str(uuid.uuid4()),
+                        logical_clock=1,
+                    )
+                    response.peer_response.CopyFrom(
+                        peer_response_to_proto({
+                            "ok": False,
+                            "detail": "Envelope Protobuf inválido.",
+                        })
+                    )
+                    socket.send(response.SerializeToString())
                     continue
-                action = request.get("action") if isinstance(request, dict) else None
+                except zmq.error.ZMQError:
+                    continue
+                action = request.peer_request.action
                 if action == "replicate_pull":
-                    socket.send_json({
+                    response = bbs_pb2.ControlEnvelope(
+                        sent_at_unix_ms=unix_time_ms(),
+                        message_id=str(uuid.uuid4()),
+                        logical_clock=request.logical_clock + 1,
+                    )
+                    response.peer_response.CopyFrom(
+                        peer_response_to_proto({
                         "ok": True,
                         "events": store.replication_events(),
-                    })
+                        })
+                    )
+                    socket.send(response.SerializeToString())
                 elif action == "replicate_apply":
                     applied = []
-                    for event in request.get("events", []):
-                        if store.apply_replication_event(event):
-                            applied.append(event.get("event_id"))
-                    socket.send_json({
+                    for event in request.peer_request.events:
+                        if store.apply_replication_event(
+                            event_from_proto(event)
+                        ):
+                            applied.append(event.event_id)
+                    response = bbs_pb2.ControlEnvelope(
+                        sent_at_unix_ms=unix_time_ms(),
+                        message_id=str(uuid.uuid4()),
+                        logical_clock=request.logical_clock + 1,
+                    )
+                    response.peer_response.CopyFrom(peer_response_to_proto({
                         "ok": True,
                         "applied": [item for item in applied if item],
-                    })
+                    }))
+                    socket.send(response.SerializeToString())
                 else:
-                    socket.send_json({"ok": False, "detail": "Ação desconhecida."})
+                    response = bbs_pb2.ControlEnvelope(
+                        sent_at_unix_ms=unix_time_ms(),
+                        message_id=str(uuid.uuid4()),
+                        logical_clock=request.logical_clock + 1,
+                    )
+                    response.peer_response.CopyFrom(peer_response_to_proto({
+                        "ok": False,
+                        "detail": "Ação desconhecida.",
+                    }))
+                    socket.send(response.SerializeToString())
         finally:
             socket.close(0)
             store.close()
@@ -72,6 +124,7 @@ class ReplicationWorker:
         self.timeout_ms = timeout_ms
         self.stopped = threading.Event()
         self.thread = threading.Thread(target=self.run, daemon=True)
+        self.logical_clock = LogicalClock()
 
     def start(self):
         self.thread.start()
@@ -87,11 +140,21 @@ class ReplicationWorker:
         socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
         socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
         socket.connect(f"tcp://{peer}:5560")
+        request = bbs_pb2.ControlEnvelope(
+            sent_at_unix_ms=unix_time_ms(),
+            message_id=str(uuid.uuid4()),
+            logical_clock=self.logical_clock.before_send(),
+        )
+        request.peer_request.CopyFrom(peer_request_to_proto(payload))
         try:
-            socket.send_json(payload)
-            response = socket.recv_json()
-            return response if isinstance(response, dict) else None
-        except (zmq.error.Again, zmq.error.ZMQError, ValueError) as error:
+            socket.send(request.SerializeToString())
+            response = bbs_pb2.ControlEnvelope()
+            response.ParseFromString(socket.recv())
+            self.logical_clock.on_receive(response.logical_clock)
+            if not response.HasField("peer_response"):
+                return None
+            return peer_response_from_proto(response.peer_response)
+        except (zmq.error.Again, zmq.error.ZMQError) as error:
             print(f"Replicação indisponível em {peer}: {error}", flush=True)
             return None
         finally:
@@ -103,7 +166,10 @@ class ReplicationWorker:
         delay = 1.0
         if self.server_id != "server-1":
             delay += 4.0
-        time.sleep(delay)
+        if self.stopped.wait(delay):
+            store.close()
+            context.term()
+            return
         try:
             while not self.stopped.wait(5):
                 for peer in self.peer_names:
