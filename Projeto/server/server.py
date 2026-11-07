@@ -151,13 +151,36 @@ def processar_mensagem(
                 publicacao = criar_mensagem(relogio_logico, relogio_fisico)
                 publicacao.publication.channel_name = pedido.channel_name
                 publicacao.publication.content = pedido.content
+                publicacao.publication.username = usuarios[cliente_id]
+                publicacao.publication.sent_at_unix_ms = mensagem.sent_at_unix_ms
                 publicacao.message_id = mensagem.message_id
                 publisher.send_multipart([
                     pedido.channel_name.encode("utf-8"),
                     publicacao.SerializeToString(),
                 ])
+                print(
+                    f"PUBLICADO no tópico {pedido.channel_name}:\n"
+                    f"{text_format.MessageToString(publicacao).strip()}",
+                    flush=True,
+                )
             resposta.publish_response.published = True
             resposta.publish_response.detail = "Publicação aceita pelo servidor."
+    elif tipo == "history_request":
+        canal = mensagem.history_request.channel_name
+        if canal and not canal_valido.fullmatch(canal):
+            resposta.error_response.error_code = "INVALID_CHANNEL_NAME"
+            resposta.error_response.detail = "Nome de canal inválido."
+        elif canal and not dados.channel_exists(canal):
+            resposta.error_response.error_code = "CHANNEL_NOT_FOUND"
+            resposta.error_response.detail = "O canal não existe neste servidor."
+        else:
+            for item in dados.publication_history(canal):
+                resposta.history_response.publications.add(
+                    channel_name=item["channel_name"],
+                    username=item["username"],
+                    content=item["content"],
+                    sent_at_unix_ms=item["sent_at_unix_ms"],
+                )
     else:
         resposta.error_response.error_code = "UNKNOWN_REQUEST"
         resposta.error_response.detail = "Tipo de mensagem não reconhecido."
@@ -275,6 +298,9 @@ def executar():
         if servidores_atualizados is None:
             servidores_atualizados = servidores_disponiveis
         coordenacao.update_servers(servidores_atualizados)
+        replication_worker.update_peers(
+            item["name"] for item in servidores_atualizados or []
+        )
 
     def sincronizar_relogio_se_necessario():
         if coordenacao.synchronization_due():

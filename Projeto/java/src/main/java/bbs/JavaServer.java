@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 
@@ -37,10 +38,10 @@ public final class JavaServer {
     private final String pubsubSubscribers = env("PUBSUB_XPUB", "tcp://pubsub-proxy:5558");
     private final String reference = env("REFERENCE_ENDPOINT", "tcp://reference:5559");
     private final String database = env("DATABASE_PATH", "/data/java.sqlite3");
-    private final List<String> serverIds = splitNames(env(
+    private final CopyOnWriteArrayList<String> serverIds = new CopyOnWriteArrayList<>(splitNames(env(
         "SERVER_IDS",
         "server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2"
-    ));
+    )));
     private final Map<String, String> users = new ConcurrentHashMap<>();
     private final AtomicLong logicalClock = new AtomicLong();
     private final ZContext context = new ZContext();
@@ -88,6 +89,16 @@ public final class JavaServer {
             }
 
             EnvelopeResult result = process(client, payload, publisher);
+            System.out.printf(
+                "RECEBIDO do cliente %s:%n%s%n",
+                clientId,
+                result.request
+            );
+            System.out.printf(
+                "ENVIADO ao cliente %s:%n%s%n",
+                clientId,
+                result.response
+            );
             persistExchange(
                 result.request,
                 result.response,
@@ -158,6 +169,20 @@ public final class JavaServer {
         } else if (request.hasListChannelsRequest()) {
             response.setListChannelsResponse(Bbs.ListChannelsResponse.newBuilder()
                 .addAllChannelNames(listChannels()));
+        } else if (request.hasHistoryRequest()) {
+            String requestedChannel = request.getHistoryRequest().getChannelName();
+            if (!requestedChannel.isEmpty() && !CHANNEL.matcher(requestedChannel).matches()) {
+                response.setErrorResponse(Bbs.ErrorResponse.newBuilder()
+                    .setErrorCode("INVALID_CHANNEL_NAME")
+                    .setDetail("Nome de canal inválido."));
+            } else if (!requestedChannel.isEmpty() && !channelExists(requestedChannel)) {
+                response.setErrorResponse(Bbs.ErrorResponse.newBuilder()
+                    .setErrorCode("CHANNEL_NOT_FOUND")
+                    .setDetail("O canal não existe neste servidor."));
+            } else {
+                response.setHistoryResponse(Bbs.HistoryResponse.newBuilder()
+                    .addAllPublications(publicationHistory(requestedChannel)));
+            }
         } else if (request.hasCreateChannelRequest()) {
             channelName = request.getCreateChannelRequest().getName();
             if (!CHANNEL.matcher(channelName).matches()) {
@@ -207,10 +232,13 @@ public final class JavaServer {
                     .setMessageId(request.getMessageId())
                     .setPublication(Bbs.Publication.newBuilder()
                         .setChannelName(channelName)
-                        .setContent(publication.getContent()))
+                        .setContent(publication.getContent())
+                        .setUsername(username)
+                        .setSentAtUnixMs(request.getSentAtUnixMs()))
                     .build();
                 publisher.send(channelName.getBytes(StandardCharsets.UTF_8), ZMQ.SNDMORE);
                 publisher.send(event.toByteArray(), 0);
+                System.out.printf("PUBLICADO no tópico %s:%n%s%n", channelName, event);
                 response.setPublishResponse(Bbs.PublishResponse.newBuilder()
                     .setPublished(true)
                     .setDetail("Publicação aceita pelo servidor."));
@@ -623,6 +651,31 @@ public final class JavaServer {
         }
     }
 
+    private List<Bbs.Publication> publicationHistory(String channelName) {
+        String sql = channelName.isEmpty()
+            ? "SELECT channel_name, username, content, sent_at_ms FROM publications ORDER BY sent_at_ms, message_id"
+            : "SELECT channel_name, username, content, sent_at_ms FROM publications WHERE channel_name=? ORDER BY sent_at_ms, message_id";
+        List<Bbs.Publication> publications = new ArrayList<>();
+        try (Connection db = connect(); PreparedStatement statement = db.prepareStatement(sql)) {
+            if (!channelName.isEmpty()) {
+                statement.setString(1, channelName);
+            }
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    publications.add(Bbs.Publication.newBuilder()
+                        .setChannelName(rows.getString(1))
+                        .setUsername(rows.getString(2))
+                        .setContent(rows.getString(3))
+                        .setSentAtUnixMs(rows.getLong(4))
+                        .build());
+                }
+            }
+            return publications;
+        } catch (SQLException error) {
+            throw new IllegalStateException("Falha ao recuperar histórico.", error);
+        }
+    }
+
     private void startPeerService(int port, boolean replication) {
         Thread thread = new Thread(() -> servePeerRequests(port, replication));
         thread.setName(id + "-peer-" + port);
@@ -797,6 +850,7 @@ public final class JavaServer {
         ControlEnvelope request = newControl().toBuilder()
             .setPeerRequest(peerRequest)
             .build();
+        System.out.printf("ENVIADO ao servidor %s:%n%s%n", peer, request);
         try (ZMQ.Socket socket = context.createSocket(SocketType.REQ)) {
             socket.setSendTimeOut(1000);
             socket.setReceiveTimeOut(1000);
@@ -811,6 +865,7 @@ public final class JavaServer {
             }
             ControlEnvelope response = ControlEnvelope.parseFrom(raw);
             receiveClock(response.getLogicalClock());
+            System.out.printf("RECEBIDO do servidor %s:%n%s%n", peer, response);
             return response.hasPeerResponse() ? response.getPeerResponse() : null;
         } catch (Exception error) {
             return null;
@@ -861,6 +916,18 @@ public final class JavaServer {
     private void refreshServers() {
         ControlEnvelope response = referenceRequest("list", "", 0);
         if (response.hasReferenceResponse()) {
+            List<String> discovered = response.getReferenceResponse()
+                .getServersList().stream()
+                .map(ServerInfo::getName)
+                .distinct()
+                .toList();
+            if (!discovered.isEmpty()) {
+                serverIds.clear();
+                serverIds.addAll(discovered);
+            }
+            if (!serverIds.contains(id)) {
+                serverIds.add(id);
+            }
             coordinatorName = coordinatorName.isEmpty()
                 ? preferredCoordinator(response.getReferenceResponse().getServersList())
                 : coordinatorName;
@@ -874,6 +941,7 @@ public final class JavaServer {
                 .setName(name)
                 .setRank(requestRank))
             .build();
+        System.out.printf("ENVIADO à referência:%n%s%n", request);
         try (ZMQ.Socket socket = context.createSocket(SocketType.REQ)) {
             socket.setSendTimeOut(1000);
             socket.setReceiveTimeOut(1000);
@@ -888,6 +956,7 @@ public final class JavaServer {
             }
             ControlEnvelope response = ControlEnvelope.parseFrom(raw);
             receiveClock(response.getLogicalClock());
+            System.out.printf("RECEBIDO da referência:%n%s%n", response);
             return response;
         } catch (Exception error) {
             System.err.println("Referência indisponível: " + error.getMessage());

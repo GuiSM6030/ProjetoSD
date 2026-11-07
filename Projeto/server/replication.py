@@ -3,113 +3,15 @@ import time
 import uuid
 
 import zmq
-from google.protobuf.message import DecodeError
+from google.protobuf import text_format
 
 import bbs_pb2
 from clocks import LogicalClock, unix_time_ms
 from .control import (
-    event_from_proto,
     peer_request_to_proto,
     peer_response_from_proto,
 )
 from .store import Store
-
-
-class ReplicationResponder:
-    def __init__(self, database_path, endpoint="tcp://*:5560"):
-        self.database_path = database_path
-        self.endpoint = endpoint
-        self.stopped = threading.Event()
-        self.thread = threading.Thread(target=self.run, daemon=True)
-
-    def start(self):
-        self.thread.start()
-
-    def stop(self):
-        self.stopped.set()
-        self.thread.join(timeout=2)
-
-    def run(self):
-        context = zmq.Context()
-        store = Store(self.database_path)
-        socket = context.socket(zmq.REP)
-        socket.setsockopt(zmq.LINGER, 0)
-        socket.bind(self.endpoint)
-        print(f"Responder de replicação ativo em {self.endpoint}.", flush=True)
-        try:
-            while not self.stopped.is_set():
-                if not socket.poll(500, zmq.POLLIN):
-                    continue
-                try:
-                    request = bbs_pb2.ControlEnvelope()
-                    request.ParseFromString(socket.recv())
-                    print(
-                        "Replicação recebida: "
-                        f"{request.peer_request.action}",
-                        flush=True,
-                    )
-                except DecodeError:
-                    response = bbs_pb2.ControlEnvelope(
-                        sent_at_unix_ms=unix_time_ms(),
-                        message_id=str(uuid.uuid4()),
-                        logical_clock=1,
-                    )
-                    response.peer_response.CopyFrom(
-                        peer_response_to_proto({
-                            "ok": False,
-                            "detail": "Envelope Protobuf inválido.",
-                        })
-                    )
-                    socket.send(response.SerializeToString())
-                    continue
-                except zmq.error.ZMQError:
-                    continue
-                action = request.peer_request.action
-                if action == "replicate_pull":
-                    response = bbs_pb2.ControlEnvelope(
-                        sent_at_unix_ms=unix_time_ms(),
-                        message_id=str(uuid.uuid4()),
-                        logical_clock=request.logical_clock + 1,
-                    )
-                    response.peer_response.CopyFrom(
-                        peer_response_to_proto({
-                        "ok": True,
-                        "events": store.replication_events(),
-                        })
-                    )
-                    socket.send(response.SerializeToString())
-                elif action == "replicate_apply":
-                    applied = []
-                    for event in request.peer_request.events:
-                        if store.apply_replication_event(
-                            event_from_proto(event)
-                        ):
-                            applied.append(event.event_id)
-                    response = bbs_pb2.ControlEnvelope(
-                        sent_at_unix_ms=unix_time_ms(),
-                        message_id=str(uuid.uuid4()),
-                        logical_clock=request.logical_clock + 1,
-                    )
-                    response.peer_response.CopyFrom(peer_response_to_proto({
-                        "ok": True,
-                        "applied": [item for item in applied if item],
-                    }))
-                    socket.send(response.SerializeToString())
-                else:
-                    response = bbs_pb2.ControlEnvelope(
-                        sent_at_unix_ms=unix_time_ms(),
-                        message_id=str(uuid.uuid4()),
-                        logical_clock=request.logical_clock + 1,
-                    )
-                    response.peer_response.CopyFrom(peer_response_to_proto({
-                        "ok": False,
-                        "detail": "Ação desconhecida.",
-                    }))
-                    socket.send(response.SerializeToString())
-        finally:
-            socket.close(0)
-            store.close()
-            context.term()
 
 
 class ReplicationWorker:
@@ -121,6 +23,7 @@ class ReplicationWorker:
         self.peer_names = [
             name for name in peer_names if name != server_id
         ]
+        self.peer_names_lock = threading.Lock()
         self.timeout_ms = timeout_ms
         self.stopped = threading.Event()
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -132,6 +35,12 @@ class ReplicationWorker:
     def stop(self):
         self.stopped.set()
         self.thread.join(timeout=2)
+
+    def update_peers(self, peer_names):
+        with self.peer_names_lock:
+            self.peer_names = list(dict.fromkeys(
+                name for name in peer_names if name != self.server_id
+            ))
 
     def request(self, context, peer, payload):
         socket = context.socket(zmq.REQ)
@@ -146,11 +55,21 @@ class ReplicationWorker:
             logical_clock=self.logical_clock.before_send(),
         )
         request.peer_request.CopyFrom(peer_request_to_proto(payload))
+        print(
+            f"ENVIADO ao servidor {peer}:\n"
+            f"{text_format.MessageToString(request).strip()}",
+            flush=True,
+        )
         try:
             socket.send(request.SerializeToString())
             response = bbs_pb2.ControlEnvelope()
             response.ParseFromString(socket.recv())
             self.logical_clock.on_receive(response.logical_clock)
+            print(
+                f"RECEBIDO do servidor {peer}:\n"
+                f"{text_format.MessageToString(response).strip()}",
+                flush=True,
+            )
             if not response.HasField("peer_response"):
                 return None
             return peer_response_from_proto(response.peer_response)
@@ -172,7 +91,9 @@ class ReplicationWorker:
             return
         try:
             while not self.stopped.wait(5):
-                for peer in self.peer_names:
+                with self.peer_names_lock:
+                    peers = list(self.peer_names)
+                for peer in peers:
                     remote = self.request(context, peer, {"action": "replicate_pull"})
                     if remote and remote.get("ok"):
                         for event in remote.get("events", []):

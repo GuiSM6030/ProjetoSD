@@ -1,6 +1,8 @@
 package bbs;
 
 import bbs.Bbs.Envelope;
+import bbs.Bbs.ControlEnvelope;
+import bbs.Bbs.ServerInfo;
 import org.zeromq.SocketType;
 import org.zeromq.ZContext;
 import org.zeromq.ZMQ;
@@ -15,13 +17,15 @@ import java.util.UUID;
 public final class JavaBot {
     private final String broker = env("BROKER_FRONTEND", "tcp://broker:5555");
     private final String pubsub = env("PUBSUB_XPUB", "tcp://pubsub-proxy:5558");
+    private final String reference = env("REFERENCE_ENDPOINT", "tcp://reference:5559");
     private final String username = env("BOT_NAME", "java-bot");
     private final String initialChannel = env("CHANNEL_NAME", "geral");
     private final String identity = username + "-" + UUID.randomUUID();
-    private final List<String> servers = Arrays.asList(env(
+    private final List<String> configuredServers = Arrays.asList(env(
         "SERVER_IDS",
         "server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2"
     ).split(","));
+    private final List<String> servers = new ArrayList<>(configuredServers);
     private final Random random = new Random();
     private long logicalClock;
     private String currentServer;
@@ -41,6 +45,21 @@ public final class JavaBot {
             Thread.sleep(250);
 
             List<String> channels = prepareChannels(context, subscriber);
+            Envelope history = send(context, createRequest(
+                "history", Bbs.HistoryRequest.getDefaultInstance()
+            ));
+            if (history != null && history.hasHistoryResponse()) {
+                for (Bbs.Publication publication
+                    : history.getHistoryResponse().getPublicationsList()) {
+                    System.out.printf(
+                        "HISTÓRICO canal=%s usuário=%s enviado_em=%d conteúdo=%s%n",
+                        publication.getChannelName(),
+                        publication.getUsername(),
+                        publication.getSentAtUnixMs(),
+                        publication.getContent()
+                    );
+                }
+            }
             String[] samples = {
                 "mensagem distribuída", "novo evento", "teste pubsub", "olá bbs"
             };
@@ -70,6 +89,21 @@ public final class JavaBot {
     }
 
     private boolean login(ZContext context) {
+        refreshServers(context);
+        Envelope automatic = request(context, "AUTO", Envelope.newBuilder()
+            .setSentAtUnixMs(System.currentTimeMillis())
+            .setMessageId(UUID.randomUUID().toString())
+            .setLogicalClock(++logicalClock)
+            .setLoginRequest(Bbs.LoginRequest.newBuilder()
+                .setUsername(username)
+                .build())
+            .build());
+        if (automatic != null && automatic.hasLoginResponse()
+            && automatic.getLoginResponse().getAccepted()) {
+            currentServer = "AUTO";
+            System.out.println("Login Java realizado no servidor selecionado pelo broker.");
+            return true;
+        }
         for (String server : servers) {
             Envelope response = request(context, server, Envelope.newBuilder()
                 .setLoginRequest(Bbs.LoginRequest.newBuilder()
@@ -92,14 +126,11 @@ public final class JavaBot {
         if (listed != null && listed.hasListChannelsResponse()) {
             channels.addAll(listed.getListChannelsResponse().getChannelNamesList());
         }
-        if (!channels.contains(initialChannel)) {
-            createChannel(context, initialChannel);
-        }
-        for (int index = 1; index <= 5; index++) {
-            String name = "canal-" + index;
-            if (!channels.contains(name)) {
-                createChannel(context, name);
-            }
+        if (channels.size() < 5) {
+            String name = channels.contains(initialChannel)
+                ? "canal-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8)
+                : initialChannel;
+            createChannel(context, name);
         }
         listed = send(context, createRequest("list", Bbs.ListChannelsRequest.getDefaultInstance()));
         channels.clear();
@@ -143,13 +174,54 @@ public final class JavaBot {
             case "publish" -> request.setPublishRequest((Bbs.PublishRequest) payload);
             case "create" -> request.setCreateChannelRequest((Bbs.CreateChannelRequest) payload);
             case "list" -> request.setListChannelsRequest((Bbs.ListChannelsRequest) payload);
+            case "history" -> request.setHistoryRequest((Bbs.HistoryRequest) payload);
             default -> throw new IllegalArgumentException("Tipo de requisição desconhecido.");
         }
         request.setLogicalClock(++logicalClock);
         return request.build();
     }
 
+    private void refreshServers(ZContext context) {
+        ControlEnvelope request = ControlEnvelope.newBuilder()
+            .setSentAtUnixMs(System.currentTimeMillis())
+            .setMessageId(UUID.randomUUID().toString())
+            .setLogicalClock(++logicalClock)
+            .setReferenceRequest(Bbs.ReferenceRequest.newBuilder().setAction("list"))
+            .build();
+        System.out.printf("ENVIADO à referência:%n%s%n", request);
+        try (ZMQ.Socket socket = context.createSocket(SocketType.REQ)) {
+            socket.setSendTimeOut(1000);
+            socket.setReceiveTimeOut(1000);
+            socket.setLinger(0);
+            socket.connect(reference);
+            if (!socket.send(request.toByteArray(), 0)) {
+                return;
+            }
+            byte[] raw = socket.recv();
+            if (raw == null) {
+                return;
+            }
+            ControlEnvelope response = ControlEnvelope.parseFrom(raw);
+            logicalClock = Math.max(logicalClock, response.getLogicalClock()) + 1;
+            System.out.printf("RECEBIDO da referência:%n%s%n", response);
+            if (!response.hasReferenceResponse()
+                || !response.getReferenceResponse().getOk()) {
+                return;
+            }
+            List<String> discovered = response.getReferenceResponse()
+                .getServersList().stream()
+                .map(ServerInfo::getName)
+                .distinct()
+                .toList();
+            servers.clear();
+            servers.addAll(discovered.isEmpty() ? configuredServers : discovered);
+        } catch (Exception error) {
+            System.err.println("Não foi possível atualizar servidores: " + error.getMessage());
+        }
+    }
+
     private Envelope send(ZContext context, Envelope request) {
+        refreshServers(context);
         if (currentServer == null) {
             if (!login(context)) {
                 return null;

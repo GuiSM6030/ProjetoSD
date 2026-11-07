@@ -18,6 +18,8 @@ message Envelope {
     PublishResponse publish_response = 18;
     Publication publication = 19;
     ErrorResponse error_response = 16;
+    HistoryRequest history_request = 20;
+    HistoryResponse history_response = 21;
   }
 }
 
@@ -61,6 +63,16 @@ message PublishResponse {
 message Publication {
   string channel_name = 1;
   string content = 2;
+  string username = 3;
+  int64 sent_at_unix_ms = 4;
+}
+
+message HistoryRequest {
+  string channel_name = 1;
+}
+
+message HistoryResponse {
+  repeated Publication publications = 1;
 }
 
 message ErrorResponse {

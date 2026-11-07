@@ -19,7 +19,11 @@ servidores = [
     for item in os.environ.get("SERVER_IDS", "server-1,server-2").split(",")
     if item.strip()
 ]
+servidores_configurados = list(servidores)
 timeout = int(os.environ.get("REQUEST_TIMEOUT_MS", "1500"))
+reference_endpoint = os.environ.get(
+    "REFERENCE_ENDPOINT", "tcp://reference:5559"
+)
 cliente_id = f"{usuario}-{uuid.uuid4().hex[:8]}"
 context = zmq.Context()
 servidor_atual = None
@@ -34,6 +38,46 @@ def criar_mensagem(tipo, dados):
     )
     getattr(mensagem, tipo).CopyFrom(dados)
     return mensagem
+
+
+def atualizar_servidores():
+    pedido = bbs_pb2.ControlEnvelope(
+        sent_at_unix_ms=unix_time_ms(),
+        message_id=str(uuid.uuid4()),
+        logical_clock=relogio_logico.before_send(),
+    )
+    pedido.reference_request.action = "list"
+    socket = context.socket(zmq.REQ)
+    socket.setsockopt(zmq.LINGER, 0)
+    socket.setsockopt(zmq.SNDTIMEO, timeout)
+    socket.setsockopt(zmq.RCVTIMEO, timeout)
+    socket.connect(reference_endpoint)
+    print(
+        "ENVIADO à referência:\n"
+        f"{text_format.MessageToString(pedido).strip()}",
+        flush=True,
+    )
+    try:
+        socket.send(pedido.SerializeToString())
+        resposta = bbs_pb2.ControlEnvelope()
+        resposta.ParseFromString(socket.recv())
+    except (zmq.error.Again, zmq.error.ZMQError) as erro:
+        print(f"Não foi possível atualizar a lista de servidores: {erro}", flush=True)
+        return
+    finally:
+        socket.close(0)
+    relogio_logico.on_receive(resposta.logical_clock)
+    print(
+        "RECEBIDO da referência:\n"
+        f"{text_format.MessageToString(resposta).strip()}",
+        flush=True,
+    )
+    if not resposta.HasField("reference_response") or not resposta.reference_response.ok:
+        return
+    descobertos = [
+        item.name for item in resposta.reference_response.servers
+    ]
+    servidores[:] = descobertos or servidores_configurados
 
 
 def enviar_mensagem(servidor_id, mensagem):
@@ -85,6 +129,9 @@ def fazer_login(servidor_id):
 
 def conectar():
     while True:
+        atualizar_servidores()
+        if fazer_login("AUTO"):
+            return
         for servidor_id in servidores:
             if fazer_login(servidor_id):
                 return
@@ -95,6 +142,20 @@ def conectar():
 def enviar_com_tentativa(tipo, dados):
     global servidor_atual
     while True:
+        atualizar_servidores()
+        if servidor_atual == "AUTO":
+            try:
+                resposta = enviar_mensagem(
+                    servidor_atual, criar_mensagem(tipo, dados)
+                )
+                return resposta
+            except zmq.error.Again:
+                print(
+                    "Servidor associado à sessão indisponível; "
+                    "tentando outro servidor.",
+                    flush=True,
+                )
+                servidor_atual = None
         inicio = servidores.index(servidor_atual) if servidor_atual in servidores else 0
         lista = servidores[inicio:] + servidores[:inicio]
         for servidor_id in lista:
@@ -136,22 +197,13 @@ def criar_canal(nome):
 
 def preparar_canais(subscriber):
     canais = listar_canais() or []
-    if canal_inicial not in canais:
-        criar_canal(canal_inicial)
-
-    for numero in range(1, 6):
-        candidato = f"canal-{numero}"
-        if numero <= 4 or candidato == canal_inicial:
-            if candidato not in canais:
-                criar_canal(candidato)
-
-    canais = listar_canais() or []
     if len(canais) < 5:
-        for numero in range(5, 12):
-            candidato = f"canal-{numero}"
-            if candidato not in canais and len(canais) < 5:
-                criar_canal(candidato)
-                canais.append(candidato)
+        candidato = (
+            canal_inicial if canal_inicial not in canais
+            else f"canal-{uuid.uuid4().hex[:8]}"
+        )
+        criar_canal(candidato)
+        canais = listar_canais() or []
 
     inscritos = []
     while len(inscritos) < min(3, len(canais)):
@@ -188,11 +240,27 @@ def executar():
     subscriber.setsockopt(zmq.LINGER, 0)
     subscriber.connect(pubsub)
     canais = preparar_canais(subscriber)
+    historico = enviar_com_tentativa(
+        "history_request", bbs_pb2.HistoryRequest()
+    )
+    if historico.WhichOneof("payload") == "history_response":
+        for item in historico.history_response.publications:
+            print(
+                f"HISTÓRICO canal={item.channel_name} usuário={item.username} "
+                f"enviado_em={item.sent_at_unix_ms} conteúdo={item.content}",
+                flush=True,
+            )
+    elif historico.WhichOneof("payload") == "error_response":
+        print(
+            f"Falha ao recuperar histórico: {historico.error_response.detail}",
+            flush=True,
+        )
     textos = ["mensagem distribuida", "novo evento", "teste pubsub", "olá bbs"]
 
     while True:
         canal = random.choice(canais)
         for numero in range(1, 11):
+            proxima_publicacao = time.monotonic() + 1
             recebida_em = time.time_ns() // 1_000_000
             texto = f"{usuario}: {random.choice(textos)} {numero}"
             resposta = enviar_com_tentativa(
@@ -202,6 +270,9 @@ def executar():
             receber(subscriber)
             if subscriber.poll(1000, zmq.POLLIN):
                 receber(subscriber)
+            restante = proxima_publicacao - time.monotonic()
+            if restante > 0:
+                time.sleep(restante)
             print(
                 f"PUBLICAÇÃO pedido={recebida_em} canal={canal} resposta={resposta.publish_response.detail}",
                 flush=True,

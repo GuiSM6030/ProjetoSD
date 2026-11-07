@@ -76,6 +76,7 @@ private:
     std::string pubsub_xpub_ = env("PUBSUB_XPUB", "tcp://pubsub-proxy:5558");
     std::string reference_endpoint_ = env("REFERENCE_ENDPOINT", "tcp://reference:5559");
     std::vector<std::string> server_ids_;
+    mutable std::mutex server_ids_mutex_;
     std::map<std::string, std::string> users_;
     std::atomic<uint64_t> logical_clock_;
     std::atomic<int> rank_{0};
@@ -109,6 +110,11 @@ private:
             }
         }
         return result;
+    }
+
+    std::vector<std::string> known_servers() const {
+        std::lock_guard<std::mutex> lock(server_ids_mutex_);
+        return server_ids_;
     }
 
     std::string next_message_id() const {
@@ -330,6 +336,36 @@ private:
         return channels;
     }
 
+    std::vector<bbs::Publication> publication_history(
+        const std::string &channel
+    ) const {
+        sqlite3 *database = open_database();
+        const char *sql = channel.empty()
+            ? "SELECT channel_name, username, content, sent_at_ms FROM publications ORDER BY sent_at_ms, message_id"
+            : "SELECT channel_name, username, content, sent_at_ms FROM publications WHERE channel_name=? ORDER BY sent_at_ms, message_id";
+        Statement query(database, sql);
+        if (!channel.empty()) {
+            sqlite3_bind_text(query.value, 1, channel.c_str(), -1, SQLITE_TRANSIENT);
+        }
+        std::vector<bbs::Publication> publications;
+        while (sqlite3_step(query.value) == SQLITE_ROW) {
+            bbs::Publication publication;
+            publication.set_channel_name(reinterpret_cast<const char *>(
+                sqlite3_column_text(query.value, 0)
+            ));
+            publication.set_username(reinterpret_cast<const char *>(
+                sqlite3_column_text(query.value, 1)
+            ));
+            publication.set_content(reinterpret_cast<const char *>(
+                sqlite3_column_text(query.value, 2)
+            ));
+            publication.set_sent_at_unix_ms(sqlite3_column_int64(query.value, 3));
+            publications.push_back(std::move(publication));
+        }
+        close_database(database);
+        return publications;
+    }
+
     void record_publication(
         const std::string &message_id,
         const std::string &channel,
@@ -491,12 +527,29 @@ private:
                 event.set_message_id(request.message_id());
                 event.mutable_publication()->set_channel_name(channel);
                 event.mutable_publication()->set_content(publication.content());
+                event.mutable_publication()->set_username(username);
+                event.mutable_publication()->set_sent_at_unix_ms(request.sent_at_unix_ms());
+                std::cout << "PUBLICADO no tópico " << channel << ":\n"
+                    << event.DebugString();
                 std::string bytes;
                 event.SerializeToString(&bytes);
                 publisher.send(zmq::buffer(channel), zmq::send_flags::sndmore);
                 publisher.send(zmq::buffer(bytes), zmq::send_flags::none);
                 response.mutable_publish_response()->set_published(true);
                 response.mutable_publish_response()->set_detail("Publicação aceita pelo servidor.");
+            }
+        } else if (request.has_history_request()) {
+            channel = request.history_request().channel_name();
+            if (!channel.empty() && !valid_channel(channel)) {
+                response.mutable_error_response()->set_error_code("INVALID_CHANNEL_NAME");
+                response.mutable_error_response()->set_detail("Nome de canal inválido.");
+            } else if (!channel.empty() && !channel_exists(channel)) {
+                response.mutable_error_response()->set_error_code("CHANNEL_NOT_FOUND");
+                response.mutable_error_response()->set_detail("O canal não existe neste servidor.");
+            } else {
+                for (const auto &publication : publication_history(channel)) {
+                    response.mutable_history_response()->add_publications()->CopyFrom(publication);
+                }
             }
         } else {
             response.mutable_error_response()->set_error_code("UNKNOWN_REQUEST");
@@ -575,6 +628,10 @@ private:
             std::string raw(static_cast<char *>(payload_frame.data()), payload_frame.size());
             ClientResult result;
             process_client_message(client, raw, publisher, result);
+            std::cout << "RECEBIDO do cliente " << client << ":\n"
+                << result.request.DebugString();
+            std::cout << "ENVIADO ao cliente " << client << ":\n"
+                << result.response.DebugString();
             persist_exchange(result.request, result.response, result.username, result.channel);
             dealer.send(client_frame, zmq::send_flags::sndmore);
             dealer.send(zmq::buffer(result.response.SerializeAsString()), zmq::send_flags::none);
@@ -600,6 +657,7 @@ private:
         request.mutable_reference_request()->set_action(action);
         request.mutable_reference_request()->set_name(name);
         request.mutable_reference_request()->set_rank(rank);
+        std::cout << "ENVIADO à referência:\n" << request.DebugString();
         zmq::socket_t socket(context_, zmq::socket_type::req);
         socket.set(zmq::sockopt::sndtimeo, 1000);
         socket.set(zmq::sockopt::rcvtimeo, 1000);
@@ -618,11 +676,30 @@ private:
             return {};
         }
         receive_clock(response.logical_clock());
+        std::cout << "RECEBIDO da referência:\n" << response.DebugString();
         return response;
     }
 
     void refresh_servers() {
-        reference_request("list", "", 0);
+        auto response = reference_request("list", "", 0);
+        if (!response.has_reference_response()
+            || !response.reference_response().ok()
+            || response.reference_response().servers().empty()) {
+            return;
+        }
+        std::vector<std::string> discovered;
+        for (const auto &server : response.reference_response().servers()) {
+            if (std::find(discovered.begin(), discovered.end(), server.name())
+                == discovered.end()) {
+                discovered.push_back(server.name());
+            }
+        }
+        if (mode_ != "bot"
+            && std::find(discovered.begin(), discovered.end(), id_) == discovered.end()) {
+            discovered.push_back(id_);
+        }
+        std::lock_guard<std::mutex> lock(server_ids_mutex_);
+        server_ids_ = std::move(discovered);
     }
 
     void heartbeat() {
@@ -735,7 +812,7 @@ private:
                     request.server_time_unix_ms(),
                     now_ms()
                 };
-                for (const auto &peer : server_ids_) {
+                for (const auto &peer : known_servers()) {
                     if (peer == id_ || peer == request.server_name()) continue;
                     bbs::PeerRequest report;
                     report.set_action("clock_report");
@@ -896,7 +973,7 @@ private:
     void replication_loop() {
         std::this_thread::sleep_for(id_ == "server-1" ? seconds(1) : seconds(5));
         while (true) {
-            for (const auto &peer : server_ids_) {
+            for (const auto &peer : known_servers()) {
                 if (peer == id_) continue;
                 bbs::PeerRequest pull;
                 pull.set_action("replicate_pull");
@@ -942,7 +1019,7 @@ private:
     void synchronize_clock() {
         std::string winner = id_;
         uint32_t highest_rank = static_cast<uint32_t>(rank_.load());
-        for (const auto &peer : server_ids_) {
+        for (const auto &peer : known_servers()) {
             if (peer == id_) continue;
             bbs::PeerRequest election;
             election.set_action("election");
@@ -958,7 +1035,7 @@ private:
         if (winner == id_) {
             announce_coordinator();
             std::vector<long long> times{now_ms()};
-            for (const auto &peer : server_ids_) {
+            for (const auto &peer : known_servers()) {
                 if (peer == id_) continue;
                 bbs::PeerRequest report;
                 report.set_action("clock_report");
@@ -1002,6 +1079,7 @@ private:
         const std::string initial_channel = env("CHANNEL_NAME", "geral");
         const std::string identity = username + "-" + std::to_string(system_now_ms());
         std::string current_server;
+        refresh_servers();
         zmq::socket_t subscriber(context_, zmq::socket_type::sub);
         subscriber.connect(pubsub_xpub_);
 
@@ -1043,7 +1121,12 @@ private:
         };
 
         while (current_server.empty()) {
-            for (const auto &server : server_ids_) {
+            refresh_servers();
+            if (login("AUTO")) {
+                current_server = "AUTO";
+            }
+            for (const auto &server : known_servers()) {
+                if (!current_server.empty()) break;
                 if (login(server)) {
                     current_server = server;
                     break;
@@ -1053,11 +1136,14 @@ private:
         }
 
         auto send_operation = [&](auto fill_request) {
+            refresh_servers();
             bbs::Envelope message = new_envelope();
             fill_request(message);
-            auto response = request(current_server, message);
+            auto response = current_server.empty()
+                ? std::optional<bbs::Envelope>()
+                : request(current_server, message);
             if (response) return response;
-            for (const auto &server : server_ids_) {
+            for (const auto &server : known_servers()) {
                 if (server == current_server || !login(server)) continue;
                 current_server = server;
                 message = new_envelope();
@@ -1076,18 +1162,16 @@ private:
                 channels.push_back(name);
             }
         }
-        if (std::find(channels.begin(), channels.end(), initial_channel) == channels.end()) {
+        if (channels.size() < 5) {
+            const std::string name =
+                std::find(channels.begin(), channels.end(), initial_channel)
+                    == channels.end()
+                ? initial_channel
+                : "canal-" + std::to_string(system_now_ms()) + "-"
+                    + std::to_string(logical_clock_.load());
             send_operation([&](bbs::Envelope &message) {
-                message.mutable_create_channel_request()->set_name(initial_channel);
+                message.mutable_create_channel_request()->set_name(name);
             });
-        }
-        for (int index = 1; index <= 5; ++index) {
-            const std::string name = "canal-" + std::to_string(index);
-            if (std::find(channels.begin(), channels.end(), name) == channels.end()) {
-                send_operation([&](bbs::Envelope &message) {
-                    message.mutable_create_channel_request()->set_name(name);
-                });
-            }
         }
         listing = send_operation([](bbs::Envelope &message) {
             message.mutable_list_channels_request();
@@ -1099,6 +1183,20 @@ private:
             }
         }
         if (channels.empty()) throw std::runtime_error("Nenhum canal está disponível.");
+        auto history = send_operation([](bbs::Envelope &message) {
+            message.mutable_history_request();
+        });
+        if (history && history->has_history_response()) {
+            for (const auto &publication : history->history_response().publications()) {
+                std::cout << "HISTÓRICO canal=" << publication.channel_name()
+                    << " usuário=" << publication.username()
+                    << " enviado_em=" << publication.sent_at_unix_ms()
+                    << " conteúdo=" << publication.content() << "\n";
+            }
+        } else if (history && history->has_error_response()) {
+            std::cerr << "Falha ao recuperar histórico: "
+                << history->error_response().detail() << "\n";
+        }
         std::mt19937 generator(static_cast<unsigned int>(system_now_ms()));
         std::shuffle(channels.begin(), channels.end(), generator);
         for (size_t index = 0; index < std::min<size_t>(3, channels.size()); ++index) {

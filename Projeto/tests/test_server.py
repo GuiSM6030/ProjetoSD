@@ -2,6 +2,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import bbs_pb2
 from clocks import LogicalClock
@@ -144,6 +145,46 @@ class BbsServerTests(unittest.TestCase):
 
         self.assertEqual(message.logical_clock, 1)
 
+    def test_bot_creates_only_one_channel_when_fewer_than_five_exist(self) -> None:
+        class Subscriber:
+            def __init__(self) -> None:
+                self.subscriptions = []
+
+            def setsockopt(self, option, value) -> None:
+                self.subscriptions.append(value)
+
+        subscriber = Subscriber()
+        existing_channels = ["um", "dois", "tres", "quatro"]
+        with (
+            patch.object(bot, "canal_inicial", "novo"),
+            patch.object(
+                bot,
+                "listar_canais",
+                side_effect=[existing_channels, existing_channels + ["novo"]],
+            ),
+            patch.object(bot, "criar_canal") as create_channel,
+        ):
+            channels = bot.preparar_canais(subscriber)
+
+        create_channel.assert_called_once_with("novo")
+        self.assertEqual(len(channels), 5)
+        self.assertEqual(len(subscriber.subscriptions), 3)
+
+    def test_bot_does_not_create_channel_when_five_already_exist(self) -> None:
+        class Subscriber:
+            def setsockopt(self, option, value) -> None:
+                pass
+
+        with (
+            patch.object(bot, "listar_canais", return_value=[
+                "um", "dois", "tres", "quatro", "cinco",
+            ]),
+            patch.object(bot, "criar_canal") as create_channel,
+        ):
+            bot.preparar_canais(Subscriber())
+
+        create_channel.assert_not_called()
+
     def test_publish_requires_login_existing_channel_and_valid_content(self) -> None:
         request = bbs_pb2.Envelope(
             sent_at_unix_ms=10,
@@ -230,6 +271,8 @@ class BbsServerTests(unittest.TestCase):
         self.assertEqual(response.logical_clock, 10)
         self.assertEqual(publication.publication.channel_name, "geral")
         self.assertEqual(publication.publication.content, "evento persistido")
+        self.assertEqual(publication.publication.username, "bot_test")
+        self.assertEqual(publication.publication.sent_at_unix_ms, 123)
 
         row = self.dados.connection.execute(
             "SELECT message_id, channel_name, content, sent_at_unix_ms "
@@ -244,6 +287,47 @@ class BbsServerTests(unittest.TestCase):
             ("client_to_server", "publish_request", "request-123"),
             ("server_to_client", "publish_response", "request-123"),
         ])
+
+    def test_history_returns_persisted_publications_with_metadata(self) -> None:
+        self.dados.create_channel("geral", "alice", 1)
+        self.dados.record_publication(
+            "message-1", "geral", "alice", "mensagem anterior", 10
+        )
+        self.usuarios[self.client_id] = "alice"
+
+        response = processar_mensagem(
+            self.client_id,
+            bbs_pb2.Envelope(
+                sent_at_unix_ms=20,
+                history_request=bbs_pb2.HistoryRequest(channel_name="geral"),
+            ),
+            self.dados,
+            self.usuarios,
+        )
+
+        self.assertEqual(response.WhichOneof("payload"), "history_response")
+        self.assertEqual(len(response.history_response.publications), 1)
+        publication = response.history_response.publications[0]
+        self.assertEqual(publication.channel_name, "geral")
+        self.assertEqual(publication.username, "alice")
+        self.assertEqual(publication.content, "mensagem anterior")
+        self.assertEqual(publication.sent_at_unix_ms, 10)
+
+    def test_history_requires_login_and_rejects_unknown_channel(self) -> None:
+        request = bbs_pb2.Envelope(
+            sent_at_unix_ms=20,
+            history_request=bbs_pb2.HistoryRequest(channel_name="geral"),
+        )
+        response = processar_mensagem(
+            self.client_id, request, self.dados, self.usuarios
+        )
+        self.assertEqual(response.error_response.error_code, "LOGIN_REQUIRED")
+
+        self.usuarios[self.client_id] = "alice"
+        response = processar_mensagem(
+            self.client_id, request, self.dados, self.usuarios
+        )
+        self.assertEqual(response.error_response.error_code, "CHANNEL_NOT_FOUND")
 
 
 if __name__ == "__main__":

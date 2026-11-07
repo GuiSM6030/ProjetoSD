@@ -147,9 +147,10 @@ services:
       BOT_NAME: java-bot-1
       BROKER_FRONTEND: tcp://broker:5555
       PUBSUB_XPUB: tcp://pubsub-proxy:5558
+      REFERENCE_ENDPOINT: tcp://reference:5559
       SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
     command: ["java", "-cp", "app.jar", "bbs.JavaBot"]
-    depends_on: [broker, pubsub-proxy, java-server-1, java-server-2]
+    depends_on: [broker, pubsub-proxy, reference, server-1, server-2, java-server-1, java-server-2, cpp-server-1, cpp-server-2]
     restart: unless-stopped
 
   java-bot-2:
@@ -160,9 +161,10 @@ services:
       BOT_NAME: java-bot-2
       BROKER_FRONTEND: tcp://broker:5555
       PUBSUB_XPUB: tcp://pubsub-proxy:5558
+      REFERENCE_ENDPOINT: tcp://reference:5559
       SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
     command: ["java", "-cp", "app.jar", "bbs.JavaBot"]
-    depends_on: [broker, pubsub-proxy, java-server-1, java-server-2]
+    depends_on: [broker, pubsub-proxy, reference, server-1, server-2, java-server-1, java-server-2, cpp-server-1, cpp-server-2]
     restart: unless-stopped
 
   cpp-bot-1:
@@ -174,8 +176,9 @@ services:
       BOT_NAME: cpp-bot-1
       BROKER_FRONTEND: tcp://broker:5555
       PUBSUB_XPUB: tcp://pubsub-proxy:5558
+      REFERENCE_ENDPOINT: tcp://reference:5559
       SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
-    depends_on: [broker, pubsub-proxy, cpp-server-1, cpp-server-2]
+    depends_on: [broker, pubsub-proxy, reference, server-1, server-2, java-server-1, java-server-2, cpp-server-1, cpp-server-2]
     restart: unless-stopped
 
   cpp-bot-2:
@@ -187,8 +190,9 @@ services:
       BOT_NAME: cpp-bot-2
       BROKER_FRONTEND: tcp://broker:5555
       PUBSUB_XPUB: tcp://pubsub-proxy:5558
+      REFERENCE_ENDPOINT: tcp://reference:5559
       SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
-    depends_on: [broker, pubsub-proxy, cpp-server-1, cpp-server-2]
+    depends_on: [broker, pubsub-proxy, reference, server-1, server-2, java-server-1, java-server-2, cpp-server-1, cpp-server-2]
     restart: unless-stopped
 
   bot-1:
@@ -201,13 +205,10 @@ services:
       CHANNEL_NAME: geral
       BROKER_FRONTEND: tcp://broker:5555
       PUBSUB_XPUB: tcp://pubsub-proxy:5558
+      REFERENCE_ENDPOINT: tcp://reference:5559
       SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
       REQUEST_TIMEOUT_MS: "1500"
-    depends_on:
-      - broker
-      - pubsub-proxy
-      - server-1
-      - server-2
+    depends_on: [broker, pubsub-proxy, reference, server-1, server-2, java-server-1, java-server-2, cpp-server-1, cpp-server-2]
     restart: unless-stopped
 
   bot-2:
@@ -220,13 +221,10 @@ services:
       CHANNEL_NAME: geral
       BROKER_FRONTEND: tcp://broker:5555
       PUBSUB_XPUB: tcp://pubsub-proxy:5558
+      REFERENCE_ENDPOINT: tcp://reference:5559
       SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
       REQUEST_TIMEOUT_MS: "1500"
-    depends_on:
-      - broker
-      - pubsub-proxy
-      - server-1
-      - server-2
+    depends_on: [broker, pubsub-proxy, reference, server-1, server-2, java-server-1, java-server-2, cpp-server-1, cpp-server-2]
     restart: unless-stopped
 
 volumes:
@@ -236,3 +234,7 @@ volumes:
   java-server-2-data:
   cpp-server-1-data:
   cpp-server-2-data:
+
+networks:
+  default:
+    name: projeto-bbs-network

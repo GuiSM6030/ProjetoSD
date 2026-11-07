@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\tbbs.proto\x12\x03\x62\x62s\"\xe0\x04\n\x08\x45nvelope\x12\x17\n\x0fsent_at_unix_ms\x18\x01 \x01(\x03\x12\x12\n\nmessage_id\x18\x02 \x01(\t\x12\x15\n\rlogical_clock\x18\x03 \x01(\x04\x12*\n\rlogin_request\x18\n \x01(\x0b\x32\x11.bbs.LoginRequestH\x00\x12,\n\x0elogin_response\x18\x0b \x01(\x0b\x32\x12.bbs.LoginResponseH\x00\x12\x39\n\x15list_channels_request\x18\x0c \x01(\x0b\x32\x18.bbs.ListChannelsRequestH\x00\x12;\n\x16list_channels_response\x18\r \x01(\x0b\x32\x19.bbs.ListChannelsResponseH\x00\x12;\n\x16\x63reate_channel_request\x18\x0e \x01(\x0b\x32\x19.bbs.CreateChannelRequestH\x00\x12=\n\x17\x63reate_channel_response\x18\x0f \x01(\x0b\x32\x1a.bbs.CreateChannelResponseH\x00\x12.\n\x0fpublish_request\x18\x11 \x01(\x0b\x32\x13.bbs.PublishRequestH\x00\x12\x30\n\x10publish_response\x18\x12 \x01(\x0b\x32\x14.bbs.PublishResponseH\x00\x12\'\n\x0bpublication\x18\x13 \x01(\x0b\x32\x10.bbs.PublicationH\x00\x12,\n\x0e\x65rror_response\x18\x10 \x01(\x0b\x32\x12.bbs.ErrorResponseH\x00\x42\t\n\x07payload\" \n\x0cLoginRequest\x12\x10\n\x08username\x18\x01 \x01(\t\"E\n\rLoginResponse\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\x12\x12\n\nerror_code\x18\x02 \x01(\t\x12\x0e\n\x06\x64\x65tail\x18\x03 \x01(\t\"\x15\n\x13ListChannelsRequest\"-\n\x14ListChannelsResponse\x12\x15\n\rchannel_names\x18\x01 \x03(\t\"$\n\x14\x43reateChannelRequest\x12\x0c\n\x04name\x18\x01 \x01(\t\"L\n\x15\x43reateChannelResponse\x12\x0f\n\x07\x63reated\x18\x01 \x01(\x08\x12\x12\n\nerror_code\x18\x02 \x01(\t\x12\x0e\n\x06\x64\x65tail\x18\x03 \x01(\t\"7\n\x0ePublishRequest\x12\x14\n\x0c\x63hannel_name\x18\x01 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x02 \x01(\t\"H\n\x0fPublishResponse\x12\x11\n\tpublished\x18\x01 \x01(\x08\x12\x12\n\nerror_code\x18\x02 \x01(\t\x12\x0e\n\x06\x64\x65tail\x18\x03 \x01(\t\"4\n\x0bPublication\x12\x14\n\x0c\x63hannel_name\x18\x01 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x02 \x01(\t\"3\n\rErrorResponse\x12\x12\n\nerror_code\x18\x01 \x01(\t\x12\x0e\n\x06\x64\x65tail\x18\x02 \x01(\t\"\xe2\x02\n\x0f\x43ontrolEnvelope\x12\x17\n\x0fsent_at_unix_ms\x18\x01 \x01(\x03\x12\x12\n\nmessage_id\x18\x02 \x01(\t\x12\x15\n\rlogical_clock\x18\x03 \x01(\x04\x12\x32\n\x11reference_request\x18\n \x01(\x0b\x32\x15.bbs.ReferenceRequestH\x00\x12\x34\n\x12reference_response\x18\x0b \x01(\x0b\x32\x16.bbs.ReferenceResponseH\x00\x12(\n\x0cpeer_request\x18\x0c \x01(\x0b\x32\x10.bbs.PeerRequestH\x00\x12*\n\rpeer_response\x18\r \x01(\x0b\x32\x11.bbs.PeerResponseH\x00\x12@\n\x18\x63oordinator_announcement\x18\x0e \x01(\x0b\x32\x1c.bbs.CoordinatorAnnouncementH\x00\x42\t\n\x07payload\"(\n\nServerInfo\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x0c\n\x04rank\x18\x02 \x01(\r\">\n\x10ReferenceRequest\x12\x0e\n\x06\x61\x63tion\x18\x01 \x01(\t\x12\x0c\n\x04name\x18\x02 \x01(\t\x12\x0c\n\x04rank\x18\x03 \x01(\r\"_\n\x11ReferenceResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0e\n\x06\x64\x65tail\x18\x02 \x01(\t\x12\x0c\n\x04rank\x18\x03 \x01(\r\x12 \n\x07servers\x18\x04 \x03(\x0b\x32\x0f.bbs.ServerInfo\"\xbf\x02\n\x10ReplicationEvent\x12\x10\n\x08\x65vent_id\x18\x01 \x01(\t\x12\x12\n\nevent_type\x18\x02 \x01(\t\x12\x0e\n\x06origin\x18\x03 \x01(\t\x12\x10\n\x08username\x18\x04 \x01(\t\x12\x14\n\x0c\x63hannel_name\x18\x05 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x06 \x01(\t\x12\x12\n\nmessage_id\x18\x07 \x01(\t\x12\x11\n\tdirection\x18\x08 \x01(\t\x12\x14\n\x0cmessage_type\x18\t \x01(\t\x12\x12\n\ncreated_by\x18\n \x01(\t\x12\x19\n\x11\x63reated_by_origin\x18\x0b \x01(\t\x12\x17\n\x0fsent_at_unix_ms\x18\x0c \x01(\x03\x12\x1b\n\x13received_at_unix_ms\x18\r \x01(\x03\x12\x1a\n\x12\x63reated_at_unix_ms\x18\x0e \x01(\x03\"\x8b\x01\n\x0bPeerRequest\x12\x0e\n\x06\x61\x63tion\x18\x01 \x01(\t\x12\x13\n\x0b\x63oordinator\x18\x02 \x01(\t\x12\x13\n\x0bserver_name\x18\x03 \x01(\t\x12\x1b\n\x13server_time_unix_ms\x18\x04 \x01(\x03\x12%\n\x06\x65vents\x18\x05 \x03(\x0b\x32\x15.bbs.ReplicationEvent\"\xca\x01\n\x0cPeerResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0e\n\x06\x64\x65tail\x18\x02 \x01(\t\x12\x13\n\x0bserver_name\x18\x03 \x01(\t\x12\x0c\n\x04rank\x18\x04 \x01(\r\x12\x1b\n\x13server_time_unix_ms\x18\x05 \x01(\x03\x12\x1c\n\x14\x63orrect_time_unix_ms\x18\x06 \x01(\x03\x12%\n\x06\x65vents\x18\x07 \x03(\x0b\x32\x15.bbs.ReplicationEvent\x12\x19\n\x11\x61pplied_event_ids\x18\x08 \x03(\t\".\n\x17\x43oordinatorAnnouncement\x12\x13\n\x0b\x63oordinator\x18\x01 \x01(\tb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\tbbs.proto\x12\x03\x62\x62s\"\xc2\x05\n\x08\x45nvelope\x12\x17\n\x0fsent_at_unix_ms\x18\x01 \x01(\x03\x12\x12\n\nmessage_id\x18\x02 \x01(\t\x12\x15\n\rlogical_clock\x18\x03 \x01(\x04\x12*\n\rlogin_request\x18\n \x01(\x0b\x32\x11.bbs.LoginRequestH\x00\x12,\n\x0elogin_response\x18\x0b \x01(\x0b\x32\x12.bbs.LoginResponseH\x00\x12\x39\n\x15list_channels_request\x18\x0c \x01(\x0b\x32\x18.bbs.ListChannelsRequestH\x00\x12;\n\x16list_channels_response\x18\r \x01(\x0b\x32\x19.bbs.ListChannelsResponseH\x00\x12;\n\x16\x63reate_channel_request\x18\x0e \x01(\x0b\x32\x19.bbs.CreateChannelRequestH\x00\x12=\n\x17\x63reate_channel_response\x18\x0f \x01(\x0b\x32\x1a.bbs.CreateChannelResponseH\x00\x12.\n\x0fpublish_request\x18\x11 \x01(\x0b\x32\x13.bbs.PublishRequestH\x00\x12\x30\n\x10publish_response\x18\x12 \x01(\x0b\x32\x14.bbs.PublishResponseH\x00\x12\'\n\x0bpublication\x18\x13 \x01(\x0b\x32\x10.bbs.PublicationH\x00\x12,\n\x0e\x65rror_response\x18\x10 \x01(\x0b\x32\x12.bbs.ErrorResponseH\x00\x12.\n\x0fhistory_request\x18\x14 \x01(\x0b\x32\x13.bbs.HistoryRequestH\x00\x12\x30\n\x10history_response\x18\x15 \x01(\x0b\x32\x14.bbs.HistoryResponseH\x00\x42\t\n\x07payload\" \n\x0cLoginRequest\x12\x10\n\x08username\x18\x01 \x01(\t\"E\n\rLoginResponse\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\x12\x12\n\nerror_code\x18\x02 \x01(\t\x12\x0e\n\x06\x64\x65tail\x18\x03 \x01(\t\"\x15\n\x13ListChannelsRequest\"-\n\x14ListChannelsResponse\x12\x15\n\rchannel_names\x18\x01 \x03(\t\"$\n\x14\x43reateChannelRequest\x12\x0c\n\x04name\x18\x01 \x01(\t\"L\n\x15\x43reateChannelResponse\x12\x0f\n\x07\x63reated\x18\x01 \x01(\x08\x12\x12\n\nerror_code\x18\x02 \x01(\t\x12\x0e\n\x06\x64\x65tail\x18\x03 \x01(\t\"7\n\x0ePublishRequest\x12\x14\n\x0c\x63hannel_name\x18\x01 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x02 \x01(\t\"H\n\x0fPublishResponse\x12\x11\n\tpublished\x18\x01 \x01(\x08\x12\x12\n\nerror_code\x18\x02 \x01(\t\x12\x0e\n\x06\x64\x65tail\x18\x03 \x01(\t\"_\n\x0bPublication\x12\x14\n\x0c\x63hannel_name\x18\x01 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x02 \x01(\t\x12\x10\n\x08username\x18\x03 \x01(\t\x12\x17\n\x0fsent_at_unix_ms\x18\x04 \x01(\x03\"&\n\x0eHistoryRequest\x12\x14\n\x0c\x63hannel_name\x18\x01 \x01(\t\"9\n\x0fHistoryResponse\x12&\n\x0cpublications\x18\x01 \x03(\x0b\x32\x10.bbs.Publication\"3\n\rErrorResponse\x12\x12\n\nerror_code\x18\x01 \x01(\t\x12\x0e\n\x06\x64\x65tail\x18\x02 \x01(\t\"\xe2\x02\n\x0f\x43ontrolEnvelope\x12\x17\n\x0fsent_at_unix_ms\x18\x01 \x01(\x03\x12\x12\n\nmessage_id\x18\x02 \x01(\t\x12\x15\n\rlogical_clock\x18\x03 \x01(\x04\x12\x32\n\x11reference_request\x18\n \x01(\x0b\x32\x15.bbs.ReferenceRequestH\x00\x12\x34\n\x12reference_response\x18\x0b \x01(\x0b\x32\x16.bbs.ReferenceResponseH\x00\x12(\n\x0cpeer_request\x18\x0c \x01(\x0b\x32\x10.bbs.PeerRequestH\x00\x12*\n\rpeer_response\x18\r \x01(\x0b\x32\x11.bbs.PeerResponseH\x00\x12@\n\x18\x63oordinator_announcement\x18\x0e \x01(\x0b\x32\x1c.bbs.CoordinatorAnnouncementH\x00\x42\t\n\x07payload\"(\n\nServerInfo\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x0c\n\x04rank\x18\x02 \x01(\r\">\n\x10ReferenceRequest\x12\x0e\n\x06\x61\x63tion\x18\x01 \x01(\t\x12\x0c\n\x04name\x18\x02 \x01(\t\x12\x0c\n\x04rank\x18\x03 \x01(\r\"_\n\x11ReferenceResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0e\n\x06\x64\x65tail\x18\x02 \x01(\t\x12\x0c\n\x04rank\x18\x03 \x01(\r\x12 \n\x07servers\x18\x04 \x03(\x0b\x32\x0f.bbs.ServerInfo\"\xbf\x02\n\x10ReplicationEvent\x12\x10\n\x08\x65vent_id\x18\x01 \x01(\t\x12\x12\n\nevent_type\x18\x02 \x01(\t\x12\x0e\n\x06origin\x18\x03 \x01(\t\x12\x10\n\x08username\x18\x04 \x01(\t\x12\x14\n\x0c\x63hannel_name\x18\x05 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x06 \x01(\t\x12\x12\n\nmessage_id\x18\x07 \x01(\t\x12\x11\n\tdirection\x18\x08 \x01(\t\x12\x14\n\x0cmessage_type\x18\t \x01(\t\x12\x12\n\ncreated_by\x18\n \x01(\t\x12\x19\n\x11\x63reated_by_origin\x18\x0b \x01(\t\x12\x17\n\x0fsent_at_unix_ms\x18\x0c \x01(\x03\x12\x1b\n\x13received_at_unix_ms\x18\r \x01(\x03\x12\x1a\n\x12\x63reated_at_unix_ms\x18\x0e \x01(\x03\"\x8b\x01\n\x0bPeerRequest\x12\x0e\n\x06\x61\x63tion\x18\x01 \x01(\t\x12\x13\n\x0b\x63oordinator\x18\x02 \x01(\t\x12\x13\n\x0bserver_name\x18\x03 \x01(\t\x12\x1b\n\x13server_time_unix_ms\x18\x04 \x01(\x03\x12%\n\x06\x65vents\x18\x05 \x03(\x0b\x32\x15.bbs.ReplicationEvent\"\xca\x01\n\x0cPeerResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\x0e\n\x06\x64\x65tail\x18\x02 \x01(\t\x12\x13\n\x0bserver_name\x18\x03 \x01(\t\x12\x0c\n\x04rank\x18\x04 \x01(\r\x12\x1b\n\x13server_time_unix_ms\x18\x05 \x01(\x03\x12\x1c\n\x14\x63orrect_time_unix_ms\x18\x06 \x01(\x03\x12%\n\x06\x65vents\x18\x07 \x03(\x0b\x32\x15.bbs.ReplicationEvent\x12\x19\n\x11\x61pplied_event_ids\x18\x08 \x03(\t\".\n\x17\x43oordinatorAnnouncement\x12\x13\n\x0b\x63oordinator\x18\x01 \x01(\tb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -32,41 +32,45 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'bbs_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_ENVELOPE']._serialized_start=19
-  _globals['_ENVELOPE']._serialized_end=627
-  _globals['_LOGINREQUEST']._serialized_start=629
-  _globals['_LOGINREQUEST']._serialized_end=661
-  _globals['_LOGINRESPONSE']._serialized_start=663
-  _globals['_LOGINRESPONSE']._serialized_end=732
-  _globals['_LISTCHANNELSREQUEST']._serialized_start=734
-  _globals['_LISTCHANNELSREQUEST']._serialized_end=755
-  _globals['_LISTCHANNELSRESPONSE']._serialized_start=757
-  _globals['_LISTCHANNELSRESPONSE']._serialized_end=802
-  _globals['_CREATECHANNELREQUEST']._serialized_start=804
-  _globals['_CREATECHANNELREQUEST']._serialized_end=840
-  _globals['_CREATECHANNELRESPONSE']._serialized_start=842
-  _globals['_CREATECHANNELRESPONSE']._serialized_end=918
-  _globals['_PUBLISHREQUEST']._serialized_start=920
-  _globals['_PUBLISHREQUEST']._serialized_end=975
-  _globals['_PUBLISHRESPONSE']._serialized_start=977
-  _globals['_PUBLISHRESPONSE']._serialized_end=1049
-  _globals['_PUBLICATION']._serialized_start=1051
-  _globals['_PUBLICATION']._serialized_end=1103
-  _globals['_ERRORRESPONSE']._serialized_start=1105
-  _globals['_ERRORRESPONSE']._serialized_end=1156
-  _globals['_CONTROLENVELOPE']._serialized_start=1159
-  _globals['_CONTROLENVELOPE']._serialized_end=1513
-  _globals['_SERVERINFO']._serialized_start=1515
-  _globals['_SERVERINFO']._serialized_end=1555
-  _globals['_REFERENCEREQUEST']._serialized_start=1557
-  _globals['_REFERENCEREQUEST']._serialized_end=1619
-  _globals['_REFERENCERESPONSE']._serialized_start=1621
-  _globals['_REFERENCERESPONSE']._serialized_end=1716
-  _globals['_REPLICATIONEVENT']._serialized_start=1719
-  _globals['_REPLICATIONEVENT']._serialized_end=2038
-  _globals['_PEERREQUEST']._serialized_start=2041
-  _globals['_PEERREQUEST']._serialized_end=2180
-  _globals['_PEERRESPONSE']._serialized_start=2183
-  _globals['_PEERRESPONSE']._serialized_end=2385
-  _globals['_COORDINATORANNOUNCEMENT']._serialized_start=2387
-  _globals['_COORDINATORANNOUNCEMENT']._serialized_end=2433
+  _globals['_ENVELOPE']._serialized_end=725
+  _globals['_LOGINREQUEST']._serialized_start=727
+  _globals['_LOGINREQUEST']._serialized_end=759
+  _globals['_LOGINRESPONSE']._serialized_start=761
+  _globals['_LOGINRESPONSE']._serialized_end=830
+  _globals['_LISTCHANNELSREQUEST']._serialized_start=832
+  _globals['_LISTCHANNELSREQUEST']._serialized_end=853
+  _globals['_LISTCHANNELSRESPONSE']._serialized_start=855
+  _globals['_LISTCHANNELSRESPONSE']._serialized_end=900
+  _globals['_CREATECHANNELREQUEST']._serialized_start=902
+  _globals['_CREATECHANNELREQUEST']._serialized_end=938
+  _globals['_CREATECHANNELRESPONSE']._serialized_start=940
+  _globals['_CREATECHANNELRESPONSE']._serialized_end=1016
+  _globals['_PUBLISHREQUEST']._serialized_start=1018
+  _globals['_PUBLISHREQUEST']._serialized_end=1073
+  _globals['_PUBLISHRESPONSE']._serialized_start=1075
+  _globals['_PUBLISHRESPONSE']._serialized_end=1147
+  _globals['_PUBLICATION']._serialized_start=1149
+  _globals['_PUBLICATION']._serialized_end=1244
+  _globals['_HISTORYREQUEST']._serialized_start=1246
+  _globals['_HISTORYREQUEST']._serialized_end=1284
+  _globals['_HISTORYRESPONSE']._serialized_start=1286
+  _globals['_HISTORYRESPONSE']._serialized_end=1343
+  _globals['_ERRORRESPONSE']._serialized_start=1345
+  _globals['_ERRORRESPONSE']._serialized_end=1396
+  _globals['_CONTROLENVELOPE']._serialized_start=1399
+  _globals['_CONTROLENVELOPE']._serialized_end=1753
+  _globals['_SERVERINFO']._serialized_start=1755
+  _globals['_SERVERINFO']._serialized_end=1795
+  _globals['_REFERENCEREQUEST']._serialized_start=1797
+  _globals['_REFERENCEREQUEST']._serialized_end=1859
+  _globals['_REFERENCERESPONSE']._serialized_start=1861
+  _globals['_REFERENCERESPONSE']._serialized_end=1956
+  _globals['_REPLICATIONEVENT']._serialized_start=1959
+  _globals['_REPLICATIONEVENT']._serialized_end=2278
+  _globals['_PEERREQUEST']._serialized_start=2281
+  _globals['_PEERREQUEST']._serialized_end=2420
+  _globals['_PEERRESPONSE']._serialized_start=2423
+  _globals['_PEERRESPONSE']._serialized_end=2625
+  _globals['_COORDINATORANNOUNCEMENT']._serialized_start=2627
+  _globals['_COORDINATORANNOUNCEMENT']._serialized_end=2673
 # @@protoc_insertion_point(module_scope)

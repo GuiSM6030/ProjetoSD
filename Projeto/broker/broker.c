@@ -5,20 +5,88 @@
 
 #define MAX_FRAMES 8
 #define MAX_SERVERS 16
+#define MAX_CLIENTS 256
+
+struct client_route {
+    char identity[256];
+    size_t identity_size;
+    char server[64];
+    int active;
+};
 
 static char server_names[MAX_SERVERS][64];
 static size_t server_name_sizes[MAX_SERVERS];
 static zmq_msg_t server_routes[MAX_SERVERS];
+static int server_active[MAX_SERVERS];
 static size_t server_count = 0;
+static struct client_route client_routes[MAX_CLIENTS];
+static size_t next_server = 0;
+static size_t next_client_slot = 0;
 
 static zmq_msg_t *find_server_route(const char *name, size_t name_size) {
     for (size_t i = 0; i < server_count; ++i) {
-        if (name_size == server_name_sizes[i] &&
+        if (server_active[i] && name_size == server_name_sizes[i] &&
             memcmp(server_names[i], name, name_size) == 0) {
             return &server_routes[i];
         }
     }
     return NULL;
+}
+
+static struct client_route *find_client_route(const char *identity,
+                                              size_t identity_size) {
+    for (size_t i = 0; i < MAX_CLIENTS; ++i) {
+        if (client_routes[i].active &&
+            identity_size == client_routes[i].identity_size &&
+            memcmp(client_routes[i].identity, identity, identity_size) == 0) {
+            return &client_routes[i];
+        }
+    }
+    return NULL;
+}
+
+static void remember_client_route(const char *identity, size_t identity_size,
+                                  const char *server, size_t server_size) {
+    if (identity_size == 0 || identity_size >= sizeof(client_routes[0].identity) ||
+        server_size == 0 || server_size >= sizeof(client_routes[0].server)) {
+        return;
+    }
+
+    struct client_route *entry = find_client_route(identity, identity_size);
+    if (entry == NULL) {
+        entry = &client_routes[next_client_slot];
+        next_client_slot = (next_client_slot + 1) % MAX_CLIENTS;
+    }
+    memcpy(entry->identity, identity, identity_size);
+    entry->identity[identity_size] = '\0';
+    entry->identity_size = identity_size;
+    memcpy(entry->server, server, server_size);
+    entry->server[server_size] = '\0';
+    entry->active = 1;
+}
+
+static size_t choose_round_robin_server(void) {
+    for (size_t offset = 0; offset < server_count; ++offset) {
+        size_t selected = (next_server + offset) % server_count;
+        if (server_active[selected]) {
+            next_server = (selected + 1) % server_count;
+            return selected;
+        }
+    }
+    return MAX_SERVERS;
+}
+
+static void remove_server(const char *name, size_t name_size) {
+    for (size_t i = 0; i < server_count; ++i) {
+        if (server_active[i] && name_size == server_name_sizes[i] &&
+            memcmp(server_names[i], name, name_size) == 0) {
+            zmq_msg_close(&server_routes[i]);
+            server_active[i] = 0;
+            fprintf(stderr, "Servidor removido do broker: %.*s\n",
+                    (int)name_size, name);
+            return;
+        }
+    }
 }
 
 static int register_server(const char *name, size_t name_size,
@@ -30,7 +98,9 @@ static int register_server(const char *name, size_t name_size,
             memcmp(server_names[i], name, name_size) == 0) {
             index = i;
             is_new = 0;
-            zmq_msg_close(&server_routes[index]);
+            if (server_active[index]) {
+                zmq_msg_close(&server_routes[index]);
+            }
             break;
         }
     }
@@ -51,6 +121,7 @@ static int register_server(const char *name, size_t name_size,
         return -1;
     }
     memcpy(zmq_msg_data(&server_routes[index]), zmq_msg_data(route), route_size);
+    server_active[index] = 1;
     return is_new;
 }
 
@@ -160,19 +231,57 @@ int main(void) {
                     size_t server_frame = count == 4 ? 2 : 1;
                     size_t payload_frame = count == 4 ? 3 : 2;
                     const char *server_id = zmq_msg_data(&frames[server_frame]);
+                    size_t server_id_size = zmq_msg_size(&frames[server_frame]);
+                    const char *identity = zmq_msg_data(&frames[0]);
+                    size_t identity_size = zmq_msg_size(&frames[0]);
+                    int automatic = server_id_size == 4 &&
+                                    memcmp(server_id, "AUTO", 4) == 0;
+                    if (automatic) {
+                        struct client_route *client = find_client_route(
+                            identity, identity_size
+                        );
+                        if (client != NULL &&
+                            find_server_route(client->server,
+                                              strlen(client->server)) != NULL) {
+                            server_id = client->server;
+                            server_id_size = strlen(client->server);
+                        } else {
+                            size_t selected = choose_round_robin_server();
+                            if (selected == MAX_SERVERS) {
+                                fprintf(stderr, "Nenhum servidor registrado.\n");
+                                close_frames(frames, count);
+                                continue;
+                            }
+                            server_id = server_names[selected];
+                            server_id_size = server_name_sizes[selected];
+                            remember_client_route(
+                                identity, identity_size, server_id, server_id_size
+                            );
+                        }
+                    } else {
+                        remember_client_route(
+                            identity, identity_size, server_id, server_id_size
+                        );
+                    }
                     printf("REQ roteado para %.*s (%zu bytes)\n",
-                           (int)zmq_msg_size(&frames[server_frame]), server_id,
+                           (int)server_id_size, server_id,
                            zmq_msg_size(&frames[payload_frame]));
                     fflush(stdout);
                     zmq_msg_t *route = find_server_route(server_id,
-                                                         zmq_msg_size(&frames[server_frame]));
+                                                         server_id_size);
                     if (route != NULL &&
-                        zmq_send(backend, zmq_msg_data(route), zmq_msg_size(route), ZMQ_SNDMORE) >= 0 &&
-                        send_frame(backend, &frames[0], 1) == 0) {
-                        (void)send_frame(backend, &frames[payload_frame], 0);
+                        zmq_send(backend, zmq_msg_data(route),
+                                 zmq_msg_size(route), ZMQ_SNDMORE) >= 0) {
+                        if (send_frame(backend, &frames[0], 1) == 0) {
+                            (void)send_frame(backend, &frames[payload_frame], 0);
+                        }
+                    } else if (route != NULL) {
+                        fprintf(stderr, "Servidor %.*s indisponível no broker.\n",
+                                (int)server_id_size, server_id);
+                        remove_server(server_id, server_id_size);
                     } else {
                         fprintf(stderr, "Servidor %.*s não registrado.\n",
-                                (int)zmq_msg_size(&frames[server_frame]), server_id);
+                                (int)server_id_size, server_id);
                     }
                 } else {
                     fprintf(stderr, "REQ inválido: esperado 3 ou 4 frames, recebido %zu.\n", count);

@@ -36,6 +36,15 @@ class ReplicationStoreTests(unittest.TestCase):
         self.assertEqual(peer.connection.execute("SELECT username FROM logins").fetchall(), [("alice",)])
         self.assertEqual(peer.connection.execute("SELECT name FROM channels").fetchall(), [("geral",)])
         self.assertEqual(peer.connection.execute("SELECT message_id FROM publications").fetchall(), [("publication-1",)])
+        self.assertEqual(
+            peer.publication_history("geral"),
+            [{
+                "channel_name": "geral",
+                "username": "alice",
+                "content": "oi",
+                "sent_at_unix_ms": 3,
+            }],
+        )
         self.assertEqual(peer.connection.execute("SELECT message_id FROM exchanged_messages").fetchall(), [("publication-1",)])
         origin.close()
         peer.close()

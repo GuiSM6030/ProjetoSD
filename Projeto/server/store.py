@@ -146,6 +146,35 @@ class Store:
         ).fetchone()
         return row is not None
 
+    def publication_history(self, channel_name: str = "") -> list[dict]:
+        if channel_name:
+            rows = self.connection.execute(
+                """
+                SELECT channel_name, username, content, sent_at_unix_ms
+                FROM publications
+                WHERE channel_name = ?
+                ORDER BY sent_at_unix_ms, message_id
+                """,
+                (channel_name,),
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                """
+                SELECT channel_name, username, content, sent_at_unix_ms
+                FROM publications
+                ORDER BY sent_at_unix_ms, message_id
+                """
+            ).fetchall()
+        return [
+            {
+                "channel_name": row[0],
+                "username": row[1],
+                "content": row[2],
+                "sent_at_unix_ms": row[3],
+            }
+            for row in rows
+        ]
+
     def record_publication(
         self, message_id: str, channel_name: str, username: str, content: str,
         timestamp_ms: int, origin: str = "unknown",
