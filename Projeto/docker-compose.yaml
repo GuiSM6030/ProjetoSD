@@ -69,6 +69,116 @@ services:
       - reference
     restart: unless-stopped
 
+  java-server-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.java
+    environment:
+      SERVER_ID: java-server-1
+      BROKER_BACKEND: tcp://broker:5556
+      DATABASE_PATH: /data/java-server-1.sqlite3
+      PUBSUB_XSUB: tcp://pubsub-proxy:5557
+    volumes:
+      - java-server-1-data:/data
+    depends_on: [broker, pubsub-proxy]
+    restart: unless-stopped
+
+  java-server-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.java
+    environment:
+      SERVER_ID: java-server-2
+      BROKER_BACKEND: tcp://broker:5556
+      DATABASE_PATH: /data/java-server-2.sqlite3
+      PUBSUB_XSUB: tcp://pubsub-proxy:5557
+    volumes:
+      - java-server-2-data:/data
+    depends_on: [broker, pubsub-proxy]
+    restart: unless-stopped
+
+  cpp-server-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpp
+    environment:
+      APP_MODE: server
+      SERVER_ID: cpp-server-1
+      BROKER_BACKEND: tcp://broker:5556
+      DATABASE_PATH: /data/cpp-server-1.sqlite3
+      PUBSUB_XSUB: tcp://pubsub-proxy:5557
+    volumes:
+      - cpp-server-1-data:/data
+    depends_on: [broker, pubsub-proxy]
+    restart: unless-stopped
+
+  cpp-server-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpp
+    environment:
+      APP_MODE: server
+      SERVER_ID: cpp-server-2
+      BROKER_BACKEND: tcp://broker:5556
+      DATABASE_PATH: /data/cpp-server-2.sqlite3
+      PUBSUB_XSUB: tcp://pubsub-proxy:5557
+    volumes:
+      - cpp-server-2-data:/data
+    depends_on: [broker, pubsub-proxy]
+    restart: unless-stopped
+
+  java-bot-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.java
+    environment:
+      BOT_NAME: java-bot-1
+      BROKER_FRONTEND: tcp://broker:5555
+      PUBSUB_XPUB: tcp://pubsub-proxy:5558
+      SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
+    command: ["java", "-cp", "app.jar", "bbs.JavaBot"]
+    depends_on: [broker, pubsub-proxy, java-server-1, java-server-2]
+    restart: unless-stopped
+
+  java-bot-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.java
+    environment:
+      BOT_NAME: java-bot-2
+      BROKER_FRONTEND: tcp://broker:5555
+      PUBSUB_XPUB: tcp://pubsub-proxy:5558
+      SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
+    command: ["java", "-cp", "app.jar", "bbs.JavaBot"]
+    depends_on: [broker, pubsub-proxy, java-server-1, java-server-2]
+    restart: unless-stopped
+
+  cpp-bot-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpp
+    environment:
+      APP_MODE: bot
+      BOT_NAME: cpp-bot-1
+      BROKER_FRONTEND: tcp://broker:5555
+      PUBSUB_XPUB: tcp://pubsub-proxy:5558
+      SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
+    depends_on: [broker, pubsub-proxy, cpp-server-1, cpp-server-2]
+    restart: unless-stopped
+
+  cpp-bot-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpp
+    environment:
+      APP_MODE: bot
+      BOT_NAME: cpp-bot-2
+      BROKER_FRONTEND: tcp://broker:5555
+      PUBSUB_XPUB: tcp://pubsub-proxy:5558
+      SERVER_IDS: server-1,server-2,java-server-1,java-server-2,cpp-server-1,cpp-server-2
+    depends_on: [broker, pubsub-proxy, cpp-server-1, cpp-server-2]
+    restart: unless-stopped
+
   bot-1:
     build:
       context: .
@@ -110,3 +220,7 @@ services:
 volumes:
   server-1-data:
   server-2-data:
+  java-server-1-data:
+  java-server-2-data:
+  cpp-server-1-data:
+  cpp-server-2-data:
