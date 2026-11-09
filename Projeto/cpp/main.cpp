@@ -258,7 +258,7 @@ private:
 
     void record_login(const std::string &username, long long timestamp, const std::string &message_id) {
         sqlite3 *database = open_database();
-        execute(database, "BEGIN");
+        execute(database, "BEGIN IMMEDIATE");
         try {
             Statement insert(database, "INSERT INTO logins(username, logged_at_ms) VALUES(?, ?)");
             sqlite3_bind_text(insert.value, 1, username.c_str(), -1, SQLITE_TRANSIENT);
@@ -287,7 +287,7 @@ private:
         const std::string &message_id
     ) {
         sqlite3 *database = open_database();
-        execute(database, "BEGIN");
+        execute(database, "BEGIN IMMEDIATE");
         try {
             Statement insert(database, "INSERT INTO channels(name, created_by, created_at_ms, created_by_origin) VALUES(?, ?, ?, ?)");
             sqlite3_bind_text(insert.value, 1, name.c_str(), -1, SQLITE_TRANSIENT);
@@ -379,7 +379,7 @@ private:
         long long timestamp
     ) {
         sqlite3 *database = open_database();
-        execute(database, "BEGIN");
+        execute(database, "BEGIN IMMEDIATE");
         try {
             Statement insert(database, "INSERT OR IGNORE INTO publications(message_id, channel_name, username, content, sent_at_ms) VALUES(?, ?, ?, ?, ?)");
             sqlite3_bind_text(insert.value, 1, message_id.c_str(), -1, SQLITE_TRANSIENT);
@@ -418,7 +418,7 @@ private:
         auto save = [&](const std::string &direction, const std::string &type,
                         const std::string &body, long long timestamp) {
             sqlite3 *database = open_database();
-            execute(database, "BEGIN");
+            execute(database, "BEGIN IMMEDIATE");
             try {
                 bbs::ReplicationEvent event;
                 event.set_event_id(
@@ -858,7 +858,7 @@ private:
 
     bool apply_remote_event(const bbs::ReplicationEvent &event) {
         sqlite3 *database = open_database();
-        execute(database, "BEGIN");
+        execute(database, "BEGIN IMMEDIATE");
         try {
             Statement exists(database, "SELECT 1 FROM replication_applied WHERE event_id=?");
             sqlite3_bind_text(exists.value, 1, event.event_id().c_str(), -1, SQLITE_TRANSIENT);
