@@ -325,6 +325,7 @@ public final class JavaServer {
     private void initializeDatabase() throws Exception {
         Path.of(database).getParent().toFile().mkdirs();
         try (Connection db = connect(); Statement statement = db.createStatement()) {
+            statement.execute("PRAGMA journal_mode=WAL");
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS logins (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, logged_at_ms INTEGER NOT NULL)");
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS channels (name TEXT PRIMARY KEY, created_by TEXT NOT NULL, created_at_ms INTEGER NOT NULL, created_by_origin TEXT NOT NULL DEFAULT '')");
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS publications (message_id TEXT PRIMARY KEY, channel_name TEXT NOT NULL, username TEXT NOT NULL, content TEXT NOT NULL, sent_at_ms INTEGER NOT NULL)");
@@ -364,7 +365,14 @@ public final class JavaServer {
     }
 
     private Connection connect() throws SQLException {
-        return DriverManager.getConnection("jdbc:sqlite:" + database);
+        Connection db = DriverManager.getConnection("jdbc:sqlite:" + database);
+        try (Statement statement = db.createStatement()) {
+            statement.execute("PRAGMA busy_timeout=10000");
+            return db;
+        } catch (SQLException error) {
+            db.close();
+            throw error;
+        }
     }
 
     private void recordLogin(String username, long timestamp, String messageId) {
