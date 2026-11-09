@@ -175,6 +175,11 @@ private:
             if (database) sqlite3_close(database);
             throw std::runtime_error(error);
         }
+        if (sqlite3_busy_timeout(database, 10000) != SQLITE_OK) {
+            std::string error = sqlite3_errmsg(database);
+            sqlite3_close(database);
+            throw std::runtime_error(error);
+        }
         return database;
     }
 
@@ -757,12 +762,19 @@ private:
             if (!socket.recv(frame)) continue;
             bbs::ControlEnvelope request;
             bbs::PeerResponse response;
-            if (request.ParseFromArray(frame.data(), static_cast<int>(frame.size()))
-                && request.has_peer_request()) {
-                response = handle_peer(request, replication);
-            } else {
+            try {
+                if (request.ParseFromArray(frame.data(), static_cast<int>(frame.size()))
+                    && request.has_peer_request()) {
+                    response = handle_peer(request, replication);
+                } else {
+                    response.set_ok(false);
+                    response.set_detail("Envelope Protobuf inválido.");
+                }
+            } catch (const std::exception &error) {
+                std::cerr << "Falha ao atender pedido do par em " << id_
+                          << ":" << port << ": " << error.what() << "\n";
                 response.set_ok(false);
-                response.set_detail("Envelope Protobuf inválido.");
+                response.set_detail(error.what());
             }
             bbs::ControlEnvelope reply = new_control();
             reply.mutable_peer_response()->CopyFrom(response);
@@ -975,29 +987,34 @@ private:
         while (true) {
             for (const auto &peer : known_servers()) {
                 if (peer == id_) continue;
-                bbs::PeerRequest pull;
-                pull.set_action("replicate_pull");
-                auto remote = peer_request(peer, pull, true);
-                if (remote.ok()) {
-                    for (const auto &event : remote.events()) {
-                        apply_remote_event(event);
+                try {
+                    bbs::PeerRequest pull;
+                    pull.set_action("replicate_pull");
+                    auto remote = peer_request(peer, pull, true);
+                    if (remote.ok()) {
+                        for (const auto &event : remote.events()) {
+                            apply_remote_event(event);
+                        }
                     }
-                }
-                auto pending = pending_events(peer);
-                if (!pending.empty()) {
-                    bbs::PeerRequest apply;
-                    apply.set_action("replicate_apply");
-                    for (const auto &event : pending) {
-                        apply.add_events()->CopyFrom(event);
+                    auto pending = pending_events(peer);
+                    if (!pending.empty()) {
+                        bbs::PeerRequest apply;
+                        apply.set_action("replicate_apply");
+                        for (const auto &event : pending) {
+                            apply.add_events()->CopyFrom(event);
+                        }
+                        auto response = peer_request(peer, apply, true);
+                        if (response.ok()) {
+                            std::vector<std::string> applied(
+                                response.applied_event_ids().begin(),
+                                response.applied_event_ids().end()
+                            );
+                            mark_delivered(applied, peer);
+                        }
                     }
-                    auto response = peer_request(peer, apply, true);
-                    if (response.ok()) {
-                        std::vector<std::string> applied(
-                            response.applied_event_ids().begin(),
-                            response.applied_event_ids().end()
-                        );
-                        mark_delivered(applied, peer);
-                    }
+                } catch (const std::exception &error) {
+                    std::cerr << "Falha na replicação de " << id_
+                              << " com " << peer << ": " << error.what() << "\n";
                 }
             }
             std::this_thread::sleep_for(seconds(5));
