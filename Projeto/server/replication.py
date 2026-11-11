@@ -4,7 +4,6 @@ import uuid
 import sqlite3
 
 import zmq
-from google.protobuf import text_format
 
 import bbs_pb2
 from clocks import LogicalClock, unix_time_ms
@@ -57,8 +56,8 @@ class ReplicationWorker:
         )
         request.peer_request.CopyFrom(peer_request_to_proto(payload))
         print(
-            f"ENVIADO ao servidor {peer}:\n"
-            f"{text_format.MessageToString(request).strip()}",
+            f"Replicação {self.server_id} -> {peer}: "
+            f"ação={payload['action']}, eventos_enviados={len(payload.get('events', []))}",
             flush=True,
         )
         try:
@@ -66,14 +65,22 @@ class ReplicationWorker:
             response = bbs_pb2.ControlEnvelope()
             response.ParseFromString(socket.recv())
             self.logical_clock.on_receive(response.logical_clock)
-            print(
-                f"RECEBIDO do servidor {peer}:\n"
-                f"{text_format.MessageToString(response).strip()}",
-                flush=True,
+            response_data = (
+                peer_response_from_proto(response.peer_response)
+                if response.HasField("peer_response") else None
             )
+            if response_data is not None:
+                print(
+                    f"Replicação {self.server_id} <- {peer}: "
+                    f"ação={payload['action']}, ok={response_data['ok']}, "
+                    f"eventos_recebidos={len(response_data['events'])}, "
+                    f"aplicados={len(response_data['applied'])}, "
+                    f"cursor={response_data['next_sequence']}",
+                    flush=True,
+                )
             if not response.HasField("peer_response"):
                 return None
-            return peer_response_from_proto(response.peer_response)
+            return response_data
         except (zmq.error.Again, zmq.error.ZMQError) as error:
             print(f"Replicação indisponível em {peer}: {error}", flush=True)
             return None
@@ -97,11 +104,21 @@ class ReplicationWorker:
                 for peer in peers:
                     try:
                         remote = self.request(
-                            context, peer, {"action": "replicate_pull"}
+                            context, peer, {
+                                "action": "replicate_pull",
+                                "after_sequence": store.replication_cursor(peer),
+                            }
                         )
                         if remote and remote.get("ok"):
-                            for event in remote.get("events", []):
-                                store.apply_replication_event(event)
+                            events = remote.get("events", [])
+                            applied_all = True
+                            for event in events:
+                                if not store.apply_replication_event(event):
+                                    applied_all = False
+                            if applied_all:
+                                store.set_replication_cursor(
+                                    peer, remote.get("next_sequence", 0)
+                                )
                         pending = store.pending_replication_events_for(peer)
                         if pending:
                             response = self.request(context, peer, {

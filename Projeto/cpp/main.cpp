@@ -208,6 +208,7 @@ private:
             execute(database, "CREATE TABLE IF NOT EXISTS replication_outbox(event_id TEXT PRIMARY KEY)");
             execute(database, "CREATE TABLE IF NOT EXISTS replication_delivered(event_id TEXT NOT NULL, target TEXT NOT NULL, PRIMARY KEY(event_id, target))");
             execute(database, "CREATE TABLE IF NOT EXISTS replication_applied(event_id TEXT PRIMARY KEY)");
+            execute(database, "CREATE TABLE IF NOT EXISTS replication_sync_state(peer TEXT PRIMARY KEY, last_sequence INTEGER NOT NULL DEFAULT 0)");
             bool has_origin = false;
             {
                 Statement columns(database, "PRAGMA table_info(channels)");
@@ -733,19 +734,50 @@ private:
             "tcp://" + peer + (replication ? ":5560" : ":5561")
         );
         std::string bytes = request.SerializeAsString();
+        if (replication) {
+            std::cerr << "Replicacao " << id_ << " -> " << peer
+                      << ": acao=" << peer_message.action()
+                      << ", eventos_enviados=" << peer_message.events_size()
+                      << "\n";
+        }
         if (!socket.send(zmq::buffer(bytes), zmq::send_flags::none)) {
+            if (replication) {
+                std::cerr << "Replicacao " << id_ << " -> " << peer
+                          << ": falha ao enviar " << peer_message.action() << "\n";
+            }
             return {};
         }
         zmq::message_t frame;
         if (!socket.recv(frame)) {
+            if (replication) {
+                std::cerr << "Replicacao " << id_ << " -> " << peer
+                          << ": sem resposta para " << peer_message.action() << "\n";
+            }
             return {};
         }
         bbs::ControlEnvelope response;
         if (!response.ParseFromArray(frame.data(), static_cast<int>(frame.size()))
             || !response.has_peer_response()) {
+            if (replication) {
+                std::cerr << "Replicacao " << id_ << " <- " << peer
+                          << ": resposta invalida para " << peer_message.action() << "\n";
+            }
             return {};
         }
         receive_clock(response.logical_clock());
+        if (replication) {
+            const auto &peer_response = response.peer_response();
+            std::cerr << "Replicacao " << id_ << " <- " << peer
+                      << ": acao=" << peer_message.action()
+                      << ", ok=" << peer_response.ok()
+                      << ", eventos_recebidos=" << peer_response.events_size()
+                      << ", aplicados=" << peer_response.applied_event_ids_size()
+                      << ", cursor=" << peer_response.next_sequence();
+            if (!peer_response.ok()) {
+                std::cerr << ", detalhe=" << peer_response.detail();
+            }
+            std::cerr << "\n";
+        }
         return response.peer_response();
     }
 
@@ -794,9 +826,11 @@ private:
         response.set_rank(static_cast<uint32_t>(rank_.load()));
         const std::string action = request.action();
         if (replication && action == "replicate_pull") {
-            for (const auto &event : read_events()) {
+            uint64_t next_sequence = request.after_sequence();
+            for (const auto &event : read_events(request.after_sequence(), &next_sequence)) {
                 response.add_events()->CopyFrom(event);
             }
+            response.set_next_sequence(next_sequence);
         } else if (replication && action == "replicate_apply") {
             for (const auto &event : request.events()) {
                 if (apply_remote_event(event)) {
@@ -840,17 +874,36 @@ private:
         return response;
     }
 
-    std::vector<bbs::ReplicationEvent> read_events() const {
+    std::vector<bbs::ReplicationEvent> read_events(
+        uint64_t after_sequence,
+        uint64_t *next_sequence
+    ) const {
         sqlite3 *database = open_database();
-        Statement query(database, "SELECT payload FROM replication_events");
+        Statement query(database, "SELECT rowid, payload FROM replication_events WHERE rowid > ? ORDER BY rowid LIMIT 100");
+        sqlite3_bind_int64(query.value, 1, static_cast<sqlite3_int64>(after_sequence));
         std::vector<bbs::ReplicationEvent> events;
-        while (sqlite3_step(query.value) == SQLITE_ROW) {
-            const void *data = sqlite3_column_blob(query.value, 0);
-            int size = sqlite3_column_bytes(query.value, 0);
-            bbs::ReplicationEvent event;
-            if (event.ParseFromArray(data, size)) {
+        try {
+            int result = SQLITE_OK;
+            while ((result = sqlite3_step(query.value)) == SQLITE_ROW) {
+                *next_sequence = static_cast<uint64_t>(
+                    sqlite3_column_int64(query.value, 0)
+                );
+                const void *data = sqlite3_column_blob(query.value, 1);
+                int size = sqlite3_column_bytes(query.value, 1);
+                bbs::ReplicationEvent event;
+                if (!event.ParseFromArray(data, size)) {
+                    throw std::runtime_error(
+                        "Evento de replicação armazenado inválido."
+                    );
+                }
                 events.push_back(event);
             }
+            if (result != SQLITE_DONE) {
+                throw std::runtime_error(sqlite3_errmsg(database));
+            }
+        } catch (...) {
+            close_database(database);
+            throw;
         }
         close_database(database);
         return events;
@@ -954,17 +1007,52 @@ private:
 
     std::vector<bbs::ReplicationEvent> pending_events(const std::string &peer) const {
         sqlite3 *database = open_database();
-        Statement query(database, "SELECT e.payload FROM replication_events e JOIN replication_outbox o ON o.event_id=e.event_id WHERE NOT EXISTS (SELECT 1 FROM replication_delivered d WHERE d.event_id=e.event_id AND d.target=?)");
+        Statement query(database, "SELECT e.payload FROM replication_events e JOIN replication_outbox o ON o.event_id=e.event_id WHERE NOT EXISTS (SELECT 1 FROM replication_delivered d WHERE d.event_id=e.event_id AND d.target=?) ORDER BY e.rowid LIMIT 100");
         sqlite3_bind_text(query.value, 1, peer.c_str(), -1, SQLITE_TRANSIENT);
         std::vector<bbs::ReplicationEvent> events;
         while (sqlite3_step(query.value) == SQLITE_ROW) {
             bbs::ReplicationEvent event;
             const void *data = sqlite3_column_blob(query.value, 0);
             int size = sqlite3_column_bytes(query.value, 0);
-            if (event.ParseFromArray(data, size)) events.push_back(event);
+            if (!event.ParseFromArray(data, size)) {
+                close_database(database);
+                throw std::runtime_error(
+                    "Evento pendente de replicação armazenado inválido."
+                );
+            }
+            events.push_back(event);
         }
         close_database(database);
         return events;
+    }
+
+    uint64_t replication_cursor(const std::string &peer) const {
+        sqlite3 *database = open_database();
+        Statement query(database, "SELECT last_sequence FROM replication_sync_state WHERE peer=?");
+        sqlite3_bind_text(query.value, 1, peer.c_str(), -1, SQLITE_TRANSIENT);
+        const int result = sqlite3_step(query.value);
+        if (result != SQLITE_ROW && result != SQLITE_DONE) {
+            std::string error = sqlite3_errmsg(database);
+            close_database(database);
+            throw std::runtime_error(error);
+        }
+        const uint64_t sequence = result == SQLITE_ROW
+            ? static_cast<uint64_t>(sqlite3_column_int64(query.value, 0)) : 0;
+        close_database(database);
+        return sequence;
+    }
+
+    void set_replication_cursor(const std::string &peer, uint64_t sequence) {
+        sqlite3 *database = open_database();
+        Statement update(database, "INSERT INTO replication_sync_state(peer, last_sequence) VALUES(?, ?) ON CONFLICT(peer) DO UPDATE SET last_sequence=MAX(last_sequence, excluded.last_sequence)");
+        sqlite3_bind_text(update.value, 1, peer.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(update.value, 2, static_cast<sqlite3_int64>(sequence));
+        if (sqlite3_step(update.value) != SQLITE_DONE) {
+            std::string error = sqlite3_errmsg(database);
+            close_database(database);
+            throw std::runtime_error(error);
+        }
+        close_database(database);
     }
 
     void mark_delivered(const std::vector<std::string> &event_ids, const std::string &peer) {
@@ -990,10 +1078,17 @@ private:
                 try {
                     bbs::PeerRequest pull;
                     pull.set_action("replicate_pull");
+                    pull.set_after_sequence(replication_cursor(peer));
                     auto remote = peer_request(peer, pull, true);
                     if (remote.ok()) {
+                        bool applied_all = true;
                         for (const auto &event : remote.events()) {
-                            apply_remote_event(event);
+                            if (!apply_remote_event(event)) {
+                                applied_all = false;
+                            }
+                        }
+                        if (applied_all) {
+                            set_replication_cursor(peer, remote.next_sequence());
                         }
                     }
                     auto pending = pending_events(peer);

@@ -32,6 +32,17 @@ import java.util.regex.Pattern;
 public final class JavaServer {
     private static final Pattern USERNAME = Pattern.compile("[A-Za-z0-9_-]{1,32}");
     private static final Pattern CHANNEL = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_-]{0,31}");
+    private static final int REPLICATION_BATCH_SIZE = 100;
+
+    private static final class ReplicationBatch {
+        private final List<ReplicationEvent> events;
+        private final long nextSequence;
+
+        private ReplicationBatch(List<ReplicationEvent> events, long nextSequence) {
+            this.events = events;
+            this.nextSequence = nextSequence;
+        }
+    }
 
     private final String id = env("SERVER_ID", "java-server-1");
     private final String backend = env("BROKER_BACKEND", "tcp://broker:5556");
@@ -335,6 +346,7 @@ public final class JavaServer {
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS replication_outbox (event_id TEXT PRIMARY KEY)");
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS replication_delivered (event_id TEXT NOT NULL, target TEXT NOT NULL, PRIMARY KEY(event_id, target))");
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS replication_applied (event_id TEXT PRIMARY KEY)");
+            statement.executeUpdate("CREATE TABLE IF NOT EXISTS replication_sync_state (peer TEXT PRIMARY KEY, last_sequence INTEGER NOT NULL DEFAULT 0)");
             ensureColumn(db, "channels", "created_by_origin", "TEXT NOT NULL DEFAULT ''");
             ensureColumn(db, "exchanged_messages", "event_id", "TEXT NOT NULL DEFAULT ''");
         }
@@ -743,7 +755,9 @@ public final class JavaServer {
             .setRank(rank);
         String action = request.getAction();
         if (replicationEndpoint && action.equals("replicate_pull")) {
-            response.addAllEvents(readEvents());
+            ReplicationBatch batch = readEvents(request.getAfterSequence());
+            response.addAllEvents(batch.events);
+            response.setNextSequence(batch.nextSequence);
         } else if (replicationEndpoint && action.equals("replicate_apply")) {
             for (ReplicationEvent event : request.getEventsList()) {
                 if (applyRemoteEvent(event)) {
@@ -785,14 +799,21 @@ public final class JavaServer {
         return response.build();
     }
 
-    private List<ReplicationEvent> readEvents() {
+    private ReplicationBatch readEvents(long afterSequence) {
         List<ReplicationEvent> events = new ArrayList<>();
-        try (Connection db = connect(); Statement statement = db.createStatement();
-             ResultSet rows = statement.executeQuery("SELECT payload FROM replication_events")) {
-            while (rows.next()) {
-                events.add(ReplicationEvent.parseFrom(rows.getBytes(1)));
+        long nextSequence = afterSequence;
+        try (Connection db = connect(); PreparedStatement statement = db.prepareStatement(
+            "SELECT rowid, payload FROM replication_events WHERE rowid > ? ORDER BY rowid LIMIT ?"
+        )) {
+            statement.setLong(1, afterSequence);
+            statement.setInt(2, REPLICATION_BATCH_SIZE);
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    nextSequence = rows.getLong(1);
+                    events.add(ReplicationEvent.parseFrom(rows.getBytes(2)));
+                }
             }
-            return events;
+            return new ReplicationBatch(events, nextSequence);
         } catch (Exception error) {
             throw new IllegalStateException("Falha ao carregar eventos para replicação.", error);
         }
@@ -814,11 +835,16 @@ public final class JavaServer {
                         continue;
                     }
                     try {
-                        PeerResponse remote = peerRequest(peer, "replicate_pull", true);
+                        PeerRequest pull = PeerRequest.newBuilder()
+                            .setAction("replicate_pull")
+                            .setAfterSequence(replicationCursor(peer))
+                            .build();
+                        PeerResponse remote = sendPeerRequest(peer, pull, true);
                         if (remote != null && remote.getOk()) {
                             for (ReplicationEvent event : remote.getEventsList()) {
                                 applyRemoteEvent(event);
                             }
+                            setReplicationCursor(peer, remote.getNextSequence());
                         }
                         List<ReplicationEvent> pending = pendingEvents(peer);
                         if (!pending.isEmpty()) {
@@ -871,34 +897,90 @@ public final class JavaServer {
         ControlEnvelope request = newControl().toBuilder()
             .setPeerRequest(peerRequest)
             .build();
-        System.out.printf("ENVIADO ao servidor %s:%n%s%n", peer, request);
+        boolean replicationAction = peerRequest.getAction().startsWith("replicate_");
+        if (replicationAction) {
+            System.out.printf(
+                "Replicação %s -> %s: ação=%s, eventos_enviados=%d%n",
+                id, peer, peerRequest.getAction(), peerRequest.getEventsCount()
+            );
+        } else {
+            System.out.printf("ENVIADO ao servidor %s:%n%s%n", peer, request);
+        }
         try (ZMQ.Socket socket = context.createSocket(SocketType.REQ)) {
             socket.setSendTimeOut(1000);
             socket.setReceiveTimeOut(1000);
             socket.setLinger(0);
             socket.connect("tcp://" + peer + ":" + (replication ? 5560 : 5561));
             if (!socket.send(request.toByteArray(), 0)) {
+                if (replicationAction) {
+                    System.err.printf("Replicação %s -> %s: falha ao enviar %s.%n", id, peer, peerRequest.getAction());
+                }
                 return null;
             }
             byte[] raw = socket.recv();
             if (raw == null) {
+                if (replicationAction) {
+                    System.err.printf("Replicação %s -> %s: sem resposta para %s.%n", id, peer, peerRequest.getAction());
+                }
                 return null;
             }
             ControlEnvelope response = ControlEnvelope.parseFrom(raw);
             receiveClock(response.getLogicalClock());
-            System.out.printf("RECEBIDO do servidor %s:%n%s%n", peer, response);
+            if (replicationAction && response.hasPeerResponse()) {
+                PeerResponse peerResponse = response.getPeerResponse();
+                System.out.printf(
+                    "Replicação %s <- %s: ação=%s, ok=%s, eventos_recebidos=%d, aplicados=%d, cursor=%d%n",
+                    id, peer, peerRequest.getAction(), peerResponse.getOk(),
+                    peerResponse.getEventsCount(), peerResponse.getAppliedEventIdsCount(),
+                    peerResponse.getNextSequence()
+                );
+            } else {
+                System.out.printf("RECEBIDO do servidor %s:%n%s%n", peer, response);
+            }
             return response.hasPeerResponse() ? response.getPeerResponse() : null;
         } catch (Exception error) {
+            if (replicationAction) {
+                System.err.printf(
+                    "Falha na replicação de %s com %s durante %s: %s%n",
+                    id, peer, peerRequest.getAction(), error.getMessage()
+                );
+            }
             return null;
+        }
+    }
+
+    private long replicationCursor(String peer) {
+        try (Connection db = connect(); PreparedStatement statement = db.prepareStatement(
+            "SELECT last_sequence FROM replication_sync_state WHERE peer=?"
+        )) {
+            statement.setString(1, peer);
+            try (ResultSet rows = statement.executeQuery()) {
+                return rows.next() ? rows.getLong(1) : 0;
+            }
+        } catch (SQLException error) {
+            throw new IllegalStateException("Falha ao ler cursor de replicação.", error);
+        }
+    }
+
+    private void setReplicationCursor(String peer, long sequence) {
+        try (Connection db = connect(); PreparedStatement statement = db.prepareStatement(
+            "INSERT INTO replication_sync_state(peer, last_sequence) VALUES(?, ?) ON CONFLICT(peer) DO UPDATE SET last_sequence=MAX(last_sequence, excluded.last_sequence)"
+        )) {
+            statement.setString(1, peer);
+            statement.setLong(2, sequence);
+            statement.executeUpdate();
+        } catch (SQLException error) {
+            throw new IllegalStateException("Falha ao atualizar cursor de replicação.", error);
         }
     }
 
     private List<ReplicationEvent> pendingEvents(String target) {
         List<ReplicationEvent> events = new ArrayList<>();
         try (Connection db = connect(); PreparedStatement statement = db.prepareStatement(
-            "SELECT e.payload FROM replication_events e JOIN replication_outbox o ON o.event_id=e.event_id WHERE NOT EXISTS (SELECT 1 FROM replication_delivered d WHERE d.event_id=e.event_id AND d.target=?)"
+            "SELECT e.payload FROM replication_events e JOIN replication_outbox o ON o.event_id=e.event_id WHERE NOT EXISTS (SELECT 1 FROM replication_delivered d WHERE d.event_id=e.event_id AND d.target=?) ORDER BY e.rowid LIMIT ?"
         )) {
             statement.setString(1, target);
+            statement.setInt(2, REPLICATION_BATCH_SIZE);
             try (ResultSet rows = statement.executeQuery()) {
                 while (rows.next()) {
                     events.add(ReplicationEvent.parseFrom(rows.getBytes(1)));

@@ -19,6 +19,6 @@ message ServerInfo { string name = 1; uint32 rank = 2; }
 message ReferenceRequest { string action = 1; string name = 2; uint32 rank = 3; }
 message ReferenceResponse { bool ok = 1; string detail = 2; uint32 rank = 3; repeated ServerInfo servers = 4; }
 message ReplicationEvent { string event_id = 1; string event_type = 2; string origin = 3; string username = 4; string channel_name = 5; string content = 6; string message_id = 7; string direction = 8; string message_type = 9; string created_by = 10; string created_by_origin = 11; int64 sent_at_unix_ms = 12; int64 received_at_unix_ms = 13; int64 created_at_unix_ms = 14; }
-message PeerRequest { string action = 1; string coordinator = 2; string server_name = 3; int64 server_time_unix_ms = 4; repeated ReplicationEvent events = 5; }
-message PeerResponse { bool ok = 1; string detail = 2; string server_name = 3; uint32 rank = 4; int64 server_time_unix_ms = 5; int64 correct_time_unix_ms = 6; repeated ReplicationEvent events = 7; repeated string applied_event_ids = 8; }
+message PeerRequest { string action = 1; string coordinator = 2; string server_name = 3; int64 server_time_unix_ms = 4; repeated ReplicationEvent events = 5; uint64 after_sequence = 6; }
+message PeerResponse { bool ok = 1; string detail = 2; string server_name = 3; uint32 rank = 4; int64 server_time_unix_ms = 5; int64 correct_time_unix_ms = 6; repeated ReplicationEvent events = 7; repeated string applied_event_ids = 8; uint64 next_sequence = 9; }
 message CoordinatorAnnouncement { string coordinator = 1; }

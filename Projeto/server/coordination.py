@@ -213,7 +213,11 @@ class ServerCoordinator:
             response.update(applied=[item for item in applied if item])
         elif action == "replicate_pull":
             if self.replication_store is not None:
-                response["events"] = self.replication_store.replication_events()
+                events, next_sequence = self.replication_store.replication_events_after(
+                    request.get("after_sequence", 0)
+                )
+                response["events"] = events
+                response["next_sequence"] = next_sequence
         elif action == "clock_report":
             response["server_time_unix_ms"] = self.physical_clock.now_ms()
         elif action == "clock":
@@ -298,10 +302,19 @@ class ServerCoordinator:
             name = server["name"]
             if name == self.server_id:
                 continue
-            remote = self.request_peer(name, {"action": "replicate_pull"})
+            remote = self.request_peer(name, {
+                "action": "replicate_pull",
+                "after_sequence": self.replication_store.replication_cursor(name),
+            })
             if remote and remote.get("ok"):
+                applied_all = True
                 for event in remote.get("events", []):
-                    self.replication_store.apply_replication_event(event)
+                    if not self.replication_store.apply_replication_event(event):
+                        applied_all = False
+                if applied_all:
+                    self.replication_store.set_replication_cursor(
+                        name, remote.get("next_sequence", 0)
+                    )
             pending = self.replication_store.pending_replication_events_for(name)
             if pending:
                 response = self.request_peer(name, {

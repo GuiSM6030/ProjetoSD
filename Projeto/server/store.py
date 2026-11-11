@@ -3,6 +3,8 @@ import sqlite3
 import uuid
 from pathlib import Path
 
+REPLICATION_BATCH_SIZE = 100
+
 
 class Store:
     def __init__(self, database_path: str) -> None:
@@ -62,6 +64,10 @@ class Store:
             CREATE TABLE IF NOT EXISTS replication_applied (
                 event_id TEXT PRIMARY KEY,
                 applied_at_unix_ms INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS replication_sync_state (
+                peer TEXT PRIMARY KEY,
+                last_sequence INTEGER NOT NULL DEFAULT 0
             );
             """
         )
@@ -267,6 +273,49 @@ class Store:
             for row in rows
         ]
 
+    def replication_events_after(
+        self, after_sequence: int, limit: int = REPLICATION_BATCH_SIZE,
+    ) -> tuple[list[dict], int]:
+        rows = self.connection.execute(
+            """
+            SELECT rowid, event_id, event_type, payload, origin
+            FROM replication_events
+            WHERE rowid > ?
+            ORDER BY rowid
+            LIMIT ?
+            """,
+            (after_sequence, limit),
+        ).fetchall()
+        events = [
+            {
+                "event_id": row[1],
+                "event_type": row[2],
+                "payload": json.loads(row[3]),
+                "origin": row[4],
+            }
+            for row in rows
+        ]
+        next_sequence = rows[-1][0] if rows else after_sequence
+        return events, next_sequence
+
+    def replication_cursor(self, peer: str) -> int:
+        row = self.connection.execute(
+            "SELECT last_sequence FROM replication_sync_state WHERE peer = ?",
+            (peer,),
+        ).fetchone()
+        return row[0] if row else 0
+
+    def set_replication_cursor(self, peer: str, sequence: int) -> None:
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT INTO replication_sync_state (peer, last_sequence)
+                VALUES (?, ?)
+                ON CONFLICT(peer) DO UPDATE SET last_sequence = MAX(last_sequence, excluded.last_sequence)
+                """,
+                (peer, sequence),
+            )
+
     def mark_delivered(self, event_id: str, target: str, timestamp_ms: int) -> None:
         with self.connection:
             self.connection.execute(
@@ -284,9 +333,10 @@ class Store:
                 SELECT 1 FROM replication_delivered d
                 WHERE d.event_id = e.event_id AND d.target = ?
             )
-            ORDER BY e.created_at_unix_ms, e.event_id
+            ORDER BY e.rowid
+            LIMIT ?
             """,
-            (target,),
+            (target, REPLICATION_BATCH_SIZE),
         ).fetchall()
         return [
             {"event_id": row[0], "event_type": row[1], "payload": json.loads(row[2]), "origin": row[3]}

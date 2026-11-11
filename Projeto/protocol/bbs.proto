@@ -135,6 +135,7 @@ message PeerRequest {
   string server_name = 3;
   int64 server_time_unix_ms = 4;
   repeated ReplicationEvent events = 5;
+  uint64 after_sequence = 6;
 }
 
 message PeerResponse {
@@ -146,6 +147,7 @@ message PeerResponse {
   int64 correct_time_unix_ms = 6;
   repeated ReplicationEvent events = 7;
   repeated string applied_event_ids = 8;
+  uint64 next_sequence = 9;
 }
 
 message CoordinatorAnnouncement {

@@ -357,9 +357,13 @@ def executar():
                 except DecodeError:
                     replication_data = {"action": "invalid"}
                 if replication_data.get("action") == "replicate_pull":
+                    events, next_sequence = dados.replication_events_after(
+                        replication_data.get("after_sequence", 0)
+                    )
                     response_data = {
                         "ok": True,
-                        "events": dados.replication_events(),
+                        "events": events,
+                        "next_sequence": next_sequence,
                     }
                 elif replication_data.get("action") == "replicate_apply":
                     applied = []

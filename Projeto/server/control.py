@@ -68,6 +68,7 @@ def peer_request_to_proto(payload):
         coordinator=payload.get("coordinator", ""),
         server_name=payload.get("server_name", ""),
         server_time_unix_ms=payload.get("server_time_unix_ms", 0),
+        after_sequence=payload.get("after_sequence", 0),
     )
     request.events.extend(
         event_to_proto(event) for event in payload.get("events", [])
@@ -81,6 +82,7 @@ def peer_request_from_proto(request):
         "coordinator": request.coordinator,
         "server_name": request.server_name,
         "server_time_unix_ms": request.server_time_unix_ms,
+        "after_sequence": request.after_sequence,
         "events": [event_from_proto(event) for event in request.events],
     }
     return payload
@@ -94,6 +96,7 @@ def peer_response_to_proto(payload):
         rank=payload.get("rank", 0) or 0,
         server_time_unix_ms=payload.get("server_time_unix_ms", 0) or 0,
         correct_time_unix_ms=payload.get("correct_time_unix_ms", 0) or 0,
+        next_sequence=payload.get("next_sequence", 0),
     )
     response.events.extend(
         event_to_proto(event) for event in payload.get("events", [])
@@ -110,6 +113,7 @@ def peer_response_from_proto(response):
         "rank": response.rank,
         "server_time_unix_ms": response.server_time_unix_ms,
         "correct_time_unix_ms": response.correct_time_unix_ms,
+        "next_sequence": response.next_sequence,
         "events": [event_from_proto(event) for event in response.events],
         "applied": list(response.applied_event_ids),
     }

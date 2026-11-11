@@ -43,7 +43,7 @@ Ao iniciar, cada bot também solicita o histórico armazenado no servidor, exibi
 
 Cada servidor persiste localmente logins, canais, publicações e as mensagens de pedido e resposta trocadas com clientes. O Compose monta um volume distinto para cada um dos seis bancos SQLite.
 
-A replicação usa eventos Protobuf e outbox durável no canal interno REQ/REP `5560`. Cada evento local e sua outbox são gravados junto com a operação. O produtor envia eventos pendentes e marca a entrega por destino somente após o ACK. `replicate_pull` recupera o histórico de um servidor que voltou. Os eventos têm identificadores estáveis e são aplicados de forma idempotente, sem eco de eventos recebidos.
+A replicação usa eventos Protobuf e outbox durável no canal interno REQ/REP `5560`. Cada evento local e sua outbox são gravados junto com a operação. O produtor envia até 100 eventos pendentes por lote e marca a entrega por destino somente após o ACK. `replicate_pull` busca lotes incrementais usando um cursor persistido por par, permitindo recuperar o histórico de um servidor que voltou sem retransmitir todo o histórico a cada ciclo. Os eventos têm identificadores estáveis e são aplicados de forma idempotente, sem eco de eventos recebidos; os logs de replicação registram contagens por par em vez de despejar payloads completos.
 
 Os seis servidores implementam o mesmo formato de evento, permitindo replicação entre Python, Java e C++. Canais concorrentes convergem pela menor chave `(created_at_unix_ms, servidor de origem, usuário criador)`. A solução oferece convergência eventual e entrega pelo menos uma vez; não oferece transação distribuída nem linearizabilidade global. Uma resposta positiva de publicação não garante que todos os pares já tenham recebido o evento.
 

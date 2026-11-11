@@ -92,6 +92,40 @@ class ReplicationStoreTests(unittest.TestCase):
         self.assertEqual(store.pending_replication_events_for("server-2"), [])
         store.close()
 
+    def test_replication_pull_is_incremental_and_cursor_persists(self):
+        source = self.store("source")
+        for index in range(205):
+            source.record_login(
+                f"user-{index}", index, f"login-{index}", "server-1"
+            )
+
+        first_batch, first_cursor = source.replication_events_after(0)
+        second_batch, second_cursor = source.replication_events_after(first_cursor)
+        final_batch, final_cursor = source.replication_events_after(second_cursor)
+
+        self.assertEqual(
+            [len(first_batch), len(second_batch), len(final_batch)],
+            [100, 100, 5],
+        )
+        self.assertEqual(final_cursor, second_cursor + len(final_batch))
+        pending = source.pending_replication_events_for("server-2")
+        self.assertEqual(len(pending), 100)
+        for event in pending:
+            source.mark_delivered(event["event_id"], "server-2", 1)
+        self.assertEqual(
+            len(source.pending_replication_events_for("server-2")), 100
+        )
+        source.set_replication_cursor("server-2", second_cursor)
+        source.close()
+
+        reopened = self.store("source")
+        self.assertEqual(reopened.replication_cursor("server-2"), second_cursor)
+        self.assertEqual(
+            reopened.replication_events_after(second_cursor)[0],
+            final_batch,
+        )
+        reopened.close()
+
 
 if __name__ == "__main__":
     unittest.main()
