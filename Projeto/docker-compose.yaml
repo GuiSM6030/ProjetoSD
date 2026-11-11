@@ -144,7 +144,7 @@ services:
       context: .
       dockerfile: Dockerfile.java
     environment:
-      BOT_NAME: java-bot-1
+      BOT_NAME: Huguinho
       BROKER_FRONTEND: tcp://broker:5555
       PUBSUB_XPUB: tcp://pubsub-proxy:5558
       REFERENCE_ENDPOINT: tcp://reference:5559
@@ -158,7 +158,7 @@ services:
       context: .
       dockerfile: Dockerfile.java
     environment:
-      BOT_NAME: java-bot-2
+      BOT_NAME: Luizinho
       BROKER_FRONTEND: tcp://broker:5555
       PUBSUB_XPUB: tcp://pubsub-proxy:5558
       REFERENCE_ENDPOINT: tcp://reference:5559
@@ -173,7 +173,7 @@ services:
       dockerfile: Dockerfile.cpp
     environment:
       APP_MODE: bot
-      BOT_NAME: cpp-bot-1
+      BOT_NAME: Zequinha
       BROKER_FRONTEND: tcp://broker:5555
       PUBSUB_XPUB: tcp://pubsub-proxy:5558
       REFERENCE_ENDPOINT: tcp://reference:5559
@@ -187,7 +187,7 @@ services:
       dockerfile: Dockerfile.cpp
     environment:
       APP_MODE: bot
-      BOT_NAME: cpp-bot-2
+      BOT_NAME: Fabinho
       BROKER_FRONTEND: tcp://broker:5555
       PUBSUB_XPUB: tcp://pubsub-proxy:5558
       REFERENCE_ENDPOINT: tcp://reference:5559
@@ -201,7 +201,7 @@ services:
       dockerfile: Dockerfile.python
     command: ["python", "-u", "client/bot.py"]
     environment:
-      BOT_NAME: bot-alice
+      BOT_NAME: Mariazinha
       CHANNEL_NAME: geral
       BROKER_FRONTEND: tcp://broker:5555
       PUBSUB_XPUB: tcp://pubsub-proxy:5558
@@ -217,7 +217,7 @@ services:
       dockerfile: Dockerfile.python
     command: ["python", "-u", "client/bot.py"]
     environment:
-      BOT_NAME: bot-bob
+      BOT_NAME: Zezinho
       CHANNEL_NAME: geral
       BROKER_FRONTEND: tcp://broker:5555
       PUBSUB_XPUB: tcp://pubsub-proxy:5558
