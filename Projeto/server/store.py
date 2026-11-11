@@ -7,7 +7,8 @@ from pathlib import Path
 class Store:
     def __init__(self, database_path: str) -> None:
         Path(database_path).parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(database_path)
+        self.connection = sqlite3.connect(database_path, timeout=30)
+        self.connection.execute("PRAGMA busy_timeout=30000")
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.executescript(
             """

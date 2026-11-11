@@ -1,6 +1,7 @@
 import threading
 import time
 import uuid
+import sqlite3
 
 import zmq
 from google.protobuf import text_format
@@ -94,24 +95,33 @@ class ReplicationWorker:
                 with self.peer_names_lock:
                     peers = list(self.peer_names)
                 for peer in peers:
-                    remote = self.request(context, peer, {"action": "replicate_pull"})
-                    if remote and remote.get("ok"):
-                        for event in remote.get("events", []):
-                            store.apply_replication_event(event)
-                    pending = store.pending_replication_events_for(peer)
-                    if pending:
-                        response = self.request(context, peer, {
-                            "action": "replicate_apply",
-                            "events": pending,
-                        })
-                        if response and response.get("ok"):
-                            delivered = set(response.get("applied", []))
-                            for event in pending:
-                                if event["event_id"] in delivered:
-                                    store.mark_delivered(
-                                        event["event_id"], peer,
-                                        int(time.time() * 1000),
-                                    )
+                    try:
+                        remote = self.request(
+                            context, peer, {"action": "replicate_pull"}
+                        )
+                        if remote and remote.get("ok"):
+                            for event in remote.get("events", []):
+                                store.apply_replication_event(event)
+                        pending = store.pending_replication_events_for(peer)
+                        if pending:
+                            response = self.request(context, peer, {
+                                "action": "replicate_apply",
+                                "events": pending,
+                            })
+                            if response and response.get("ok"):
+                                delivered = set(response.get("applied", []))
+                                for event in pending:
+                                    if event["event_id"] in delivered:
+                                        store.mark_delivered(
+                                            event["event_id"], peer,
+                                            int(time.time() * 1000),
+                                        )
+                    except sqlite3.Error as error:
+                        print(
+                            f"Falha na replicação de {self.server_id} "
+                            f"com {peer}: {error}",
+                            flush=True,
+                        )
         finally:
             store.close()
             context.term()

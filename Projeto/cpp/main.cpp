@@ -175,7 +175,7 @@ private:
             if (database) sqlite3_close(database);
             throw std::runtime_error(error);
         }
-        if (sqlite3_busy_timeout(database, 10000) != SQLITE_OK) {
+        if (sqlite3_busy_timeout(database, 30000) != SQLITE_OK) {
             std::string error = sqlite3_errmsg(database);
             sqlite3_close(database);
             throw std::runtime_error(error);

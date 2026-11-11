@@ -9,6 +9,7 @@ import bbs.Bbs.ServerInfo;
 import org.zeromq.SocketType;
 import org.zeromq.ZContext;
 import org.zeromq.ZMQ;
+import org.sqlite.SQLiteConfig;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -365,9 +366,14 @@ public final class JavaServer {
     }
 
     private Connection connect() throws SQLException {
-        Connection db = DriverManager.getConnection("jdbc:sqlite:" + database);
+        SQLiteConfig config = new SQLiteConfig();
+        config.setBusyTimeout(30_000);
+        config.setTransactionMode(SQLiteConfig.TransactionMode.IMMEDIATE);
+        Connection db = DriverManager.getConnection(
+            "jdbc:sqlite:" + database, config.toProperties()
+        );
         try (Statement statement = db.createStatement()) {
-            statement.execute("PRAGMA busy_timeout=10000");
+            statement.execute("PRAGMA busy_timeout=30000");
             return db;
         } catch (SQLException error) {
             db.close();
@@ -807,18 +813,25 @@ public final class JavaServer {
                     if (peer.equals(id)) {
                         continue;
                     }
-                    PeerResponse remote = peerRequest(peer, "replicate_pull", true);
-                    if (remote != null && remote.getOk()) {
-                        for (ReplicationEvent event : remote.getEventsList()) {
-                            applyRemoteEvent(event);
+                    try {
+                        PeerResponse remote = peerRequest(peer, "replicate_pull", true);
+                        if (remote != null && remote.getOk()) {
+                            for (ReplicationEvent event : remote.getEventsList()) {
+                                applyRemoteEvent(event);
+                            }
                         }
-                    }
-                    List<ReplicationEvent> pending = pendingEvents(peer);
-                    if (!pending.isEmpty()) {
-                        PeerResponse applied = peerRequest(peer, "replicate_apply", true, pending);
-                        if (applied != null && applied.getOk()) {
-                            markDelivered(applied.getAppliedEventIdsList(), peer);
+                        List<ReplicationEvent> pending = pendingEvents(peer);
+                        if (!pending.isEmpty()) {
+                            PeerResponse applied = peerRequest(peer, "replicate_apply", true, pending);
+                            if (applied != null && applied.getOk()) {
+                                markDelivered(applied.getAppliedEventIdsList(), peer);
+                            }
                         }
+                    } catch (RuntimeException error) {
+                        System.err.printf(
+                            "Falha na replicação de %s com %s: %s%n",
+                            id, peer, error.getMessage()
+                        );
                     }
                 }
                 Thread.sleep(5000);
