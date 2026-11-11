@@ -1,8 +1,5 @@
-# Sistemas Distribuídos
+# Projeto Final — Sistemas Distribuídos
 
-Repositório da disciplina de Sistemas Distribuídos (FEI, período noturno).
+Implementação do sistema de troca de mensagens instantâneas, cobrindo as cinco partes do enunciado.
 
-- [`Labs/`](./Labs/): laboratórios realizados em aula.
-- [`Projeto/`](./Projeto/): versão final do projeto de troca de mensagens instantâneas (Partes 1 a 5).
-
-Para executar e testar o projeto, consulte [`Projeto/README.md`](./Projeto/README.md).
+O código, os testes e os arquivos de execução estão em [`Projeto/`](./Projeto/). Para arquitetura, requisitos, execução e validação, consulte [`Projeto/README.md`](./Projeto/README.md).
