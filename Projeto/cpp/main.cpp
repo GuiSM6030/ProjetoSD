@@ -727,8 +727,9 @@ private:
         bbs::ControlEnvelope request = new_control();
         request.mutable_peer_request()->CopyFrom(peer_message);
         zmq::socket_t socket(context_, zmq::socket_type::req);
-        socket.set(zmq::sockopt::sndtimeo, 1000);
-        socket.set(zmq::sockopt::rcvtimeo, 1000);
+        const int timeout_ms = replication ? 3000 : 1000;
+        socket.set(zmq::sockopt::sndtimeo, timeout_ms);
+        socket.set(zmq::sockopt::rcvtimeo, timeout_ms);
         socket.set(zmq::sockopt::linger, 0);
         socket.connect(
             "tcp://" + peer + (replication ? ":5560" : ":5561")

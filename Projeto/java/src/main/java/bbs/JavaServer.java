@@ -907,8 +907,9 @@ public final class JavaServer {
             System.out.printf("ENVIADO ao servidor %s:%n%s%n", peer, request);
         }
         try (ZMQ.Socket socket = context.createSocket(SocketType.REQ)) {
-            socket.setSendTimeOut(1000);
-            socket.setReceiveTimeOut(1000);
+            int timeoutMs = replication ? 3000 : 1000;
+            socket.setSendTimeOut(timeoutMs);
+            socket.setReceiveTimeOut(timeoutMs);
             socket.setLinger(0);
             socket.connect("tcp://" + peer + ":" + (replication ? 5560 : 5561));
             if (!socket.send(request.toByteArray(), 0)) {
