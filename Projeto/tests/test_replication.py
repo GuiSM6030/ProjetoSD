@@ -1,5 +1,6 @@
 import os
 import tempfile
+import threading
 import unittest
 
 from server.store import Store
@@ -125,6 +126,84 @@ class ReplicationStoreTests(unittest.TestCase):
             final_batch,
         )
         reopened.close()
+
+    def test_concurrent_local_publication_is_recorded_once(self):
+        path = os.path.join(self.directory.name, "concurrent-local.sqlite3")
+        self.store("concurrent-local").close()
+        barrier = threading.Barrier(2)
+        errors = []
+
+        def record():
+            store = Store(path)
+            try:
+                barrier.wait()
+                store.record_publication(
+                    "same-message", "geral", "alice", "oi", 1, "server-1"
+                )
+            except Exception as error:
+                errors.append(error)
+            finally:
+                store.close()
+
+        threads = [threading.Thread(target=record) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(errors, [])
+        store = Store(path)
+        self.assertEqual(
+            store.connection.execute(
+                "SELECT COUNT(*) FROM publications WHERE message_id='same-message'"
+            ).fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            store.connection.execute(
+                "SELECT COUNT(*) FROM replication_events WHERE event_id='publication:same-message'"
+            ).fetchone()[0],
+            1,
+        )
+        store.close()
+
+    def test_concurrent_duplicate_replication_is_applied_once(self):
+        origin = self.store("concurrent-origin")
+        origin.record_publication(
+            "same-message", "geral", "alice", "oi", 1, "server-1"
+        )
+        event = origin.replication_events()[0]
+        path = os.path.join(self.directory.name, "concurrent-peer.sqlite3")
+        self.store("concurrent-peer").close()
+        barrier = threading.Barrier(2)
+        errors = []
+
+        def apply():
+            store = Store(path)
+            try:
+                barrier.wait()
+                self.assertTrue(store.apply_replication_event(event))
+            except Exception as error:
+                errors.append(error)
+            finally:
+                store.close()
+
+        threads = [threading.Thread(target=apply) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(errors, [])
+        peer = Store(path)
+        self.assertEqual(
+            peer.connection.execute(
+                "SELECT COUNT(*) FROM publications WHERE message_id='same-message'"
+            ).fetchone()[0],
+            1,
+        )
+        peer.close()
+        origin.close()
 
 
 if __name__ == "__main__":

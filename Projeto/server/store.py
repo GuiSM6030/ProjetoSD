@@ -102,6 +102,7 @@ class Store:
         payload = {"username": username, "sent_at_unix_ms": timestamp_ms}
         event_id = event_id or f"login:{username}:{timestamp_ms}:{uuid.uuid4()}"
         with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
             self.connection.execute(
                 "INSERT INTO replication_applied (event_id) VALUES (?) ON CONFLICT(event_id) DO NOTHING",
                 (event_id,),
@@ -125,8 +126,6 @@ class Store:
         self, name: str, username: str, timestamp_ms: int,
         event_id: str | None = None, origin: str = "unknown",
     ) -> bool:
-        if self.channel_exists(name):
-            return False
         event_id = event_id or f"channel:{name}:{origin}:{timestamp_ms}:{uuid.uuid4()}"
         payload = {
             "name": name,
@@ -135,6 +134,9 @@ class Store:
             "created_at_unix_ms": timestamp_ms,
         }
         with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            if self.channel_exists(name):
+                return False
             self.connection.execute(
                 "INSERT INTO replication_applied (event_id) VALUES (?) ON CONFLICT(event_id) DO NOTHING",
                 (event_id,),
@@ -195,6 +197,7 @@ class Store:
             "sent_at_unix_ms": timestamp_ms,
         }
         with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
             self.connection.execute(
                 "INSERT INTO replication_applied (event_id) VALUES (?) ON CONFLICT(event_id) DO NOTHING",
                 (event_id,),
@@ -227,6 +230,7 @@ class Store:
             "received_at_unix_ms": received_at_unix_ms,
         }
         with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
             self.connection.execute(
                 "INSERT INTO replication_applied (event_id) VALUES (?) ON CONFLICT(event_id) DO NOTHING",
                 (event_id,),
@@ -349,13 +353,13 @@ class Store:
         payload = event.get("payload", {})
         if not event_id or not isinstance(payload, dict):
             return False
-        if self.connection.execute(
-            "SELECT 1 FROM replication_applied WHERE event_id = ?", (event_id,)
-        ).fetchone():
-            return True
-
         origin = str(event.get("origin", "unknown"))
         with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            if self.connection.execute(
+                "SELECT 1 FROM replication_applied WHERE event_id = ?", (event_id,)
+            ).fetchone():
+                return True
             if event_type == "login":
                 self.connection.execute(
                     "INSERT INTO logins (username, logged_in_at_unix_ms) VALUES (?, ?)",
