@@ -4,6 +4,8 @@
 
 O Compose executa dois clientes e dois servidores por linguagem: Python, Java e C++ orientado a objetos. Portanto, os seis bots e os seis servidores participam da mesma aplicação. O broker Req/Rep é implementado em C e encaminha os pedidos sem interpretar os envelopes. Ao abrir uma sessão com o destino `AUTO`, distribui os clientes entre os servidores registrados em round-robin e mantém afinidade por identidade para preservar o login; os bots podem selecionar outro servidor explicitamente em caso de falha.
 
+Os servidores C++ reenviam periodicamente o registro `READY` ao broker para recuperar o roteamento caso o broker reinicie enquanto eles continuam ativos.
+
 ```text
 clientes REQ -> broker C :5555 -> servidores DEALER :5556
 servidores PUB :5557 -> proxy XSUB/XPUB -> clientes SUB :5558

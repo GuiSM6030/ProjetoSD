@@ -596,12 +596,24 @@ private:
         subscriber.set(zmq::sockopt::subscribe, "servers");
         subscriber.connect(pubsub_xpub_);
 
-        dealer.send(zmq::buffer("READY"), zmq::send_flags::sndmore);
-        dealer.send(zmq::buffer(id_), zmq::send_flags::none);
-        std::cout << "Servidor C++ " << id_ << " conectado ao broker.\n";
+        auto register_with_broker = [&] {
+            if (!dealer.send(zmq::buffer("READY"), zmq::send_flags::sndmore)
+                || !dealer.send(zmq::buffer(id_), zmq::send_flags::none)) {
+                std::cerr << "Falha ao enviar registro do servidor "
+                    << id_ << " ao broker.\n";
+            }
+        };
+        register_with_broker();
+        auto last_registration = steady_clock::now();
+        std::cout << "Registro do servidor C++ " << id_
+            << " enviado ao broker.\n";
         int clients_since_heartbeat = 0;
         int messages_since_sync = 0;
         while (true) {
+            if (steady_clock::now() - last_registration >= seconds(2)) {
+                register_with_broker();
+                last_registration = steady_clock::now();
+            }
             zmq::pollitem_t items[] = {
                 {dealer.handle(), 0, ZMQ_POLLIN, 0},
                 {subscriber.handle(), 0, ZMQ_POLLIN, 0},
