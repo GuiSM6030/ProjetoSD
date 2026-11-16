@@ -547,7 +547,7 @@ private:
         subscriber.connect(pubsub_xpub_);
 
         auto register_with_broker = [&] {
-            if (!dealer.send(zmq::buffer("READY"), zmq::send_flags::sndmore)
+            if (!dealer.send(zmq::buffer("READY", 5), zmq::send_flags::sndmore)
                 || !dealer.send(zmq::buffer(id_), zmq::send_flags::none)) {
                 std::cerr << "Falha ao enviar registro do servidor "
                     << id_ << " ao broker.\n";
@@ -800,7 +800,7 @@ private:
         bbs::ControlEnvelope announcement = new_control();
         announcement.mutable_coordinator_announcement()->set_coordinator(id_);
         std::string bytes = announcement.SerializeAsString();
-        publisher.send(zmq::buffer("servers"), zmq::send_flags::sndmore);
+        publisher.send(zmq::buffer("servers", 7), zmq::send_flags::sndmore);
         publisher.send(zmq::buffer(bytes), zmq::send_flags::none);
         std::cout << "Coordenador anunciado no tópico servers: " << id_ << ".\n";
     }
