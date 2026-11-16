@@ -802,6 +802,7 @@ private:
         std::string bytes = announcement.SerializeAsString();
         publisher.send(zmq::buffer("servers"), zmq::send_flags::sndmore);
         publisher.send(zmq::buffer(bytes), zmq::send_flags::none);
+        std::cout << "Coordenador anunciado no tópico servers: " << id_ << ".\n";
     }
 
     std::vector<bbs::ReplicationEvent> read_events(uint64_t after_sequence, uint64_t *next_sequence) const {
