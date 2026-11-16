@@ -1,148 +1,59 @@
-# Projeto de Sistemas Distribuídos
+# Sistema de troca de mensagens
 
-Esse projeto é um sistema distribuído de troca de mensagens tipo BBS/IRC, com bots simulando usuários, servidores em diferentes linguagens e um mecanismo de coordenação e replicação entre nós.
+Este projeto foi feito para a disciplina de Sistemas Distribuídos. Bots entram no sistema, criam ou consultam canais e enviam mensagens. Os bots fazem isso sozinhos, sem precisar de alguém digitando durante a execução.
 
-A ideia principal é que o cliente não fale direto com o servidor “fixo”. Em vez disso, os bots enviam requisições para um broker, o servidor valida a operação, salva em disco e, quando necessário, publica no canal correto via Pub/Sub. Além disso, há referência para rank/heartbeat e eleição de coordenador para sincronizar relógios entre os servidores.
+Há servidores e bots em Python, Java e C++. O Docker Compose inicia tudo junto.
 
-## Linguagens e estrutura
+## Como funciona
 
-O projeto usa três implementações principais:
-- Python
-- Java
-- C++
+- O broker recebe os pedidos dos bots e os encaminha aos servidores.
+- Os servidores cuidam do login, dos canais e das publicações. Cada servidor guarda seus dados em um banco SQLite próprio.
+- Quando um bot publica em um canal, os outros bots inscritos nele recebem a mensagem.
+- Os servidores trocam entre si cópias das alterações para manter os dados parecidos. Essa atualização pode levar alguns instantes.
+- Um serviço acompanha quais servidores estão ativos. Os servidores escolhem um coordenador para ajudar a ajustar seus relógios.
 
-Cada uma delas tem servidor e bot, e o ambiente inteiro é orquestrado com Docker Compose.
+As mensagens usam ZeroMQ para comunicação e Protocol Buffers para serem enviadas em formato binário. Elas também levam o horário de envio e um contador que ajuda a ordenar os acontecimentos.
 
-Estrutura principal:
-- `broker/` — broker Req/Rep em C
-- `pubsub_proxy.py` — proxy XSUB/XPUB para canais
-- `server/` — lógica do servidor em Python
-- `java/` — servidor e bot em Java
-- `cpp/` — servidor e bot em C++
-- `protocol/` — contrato Protobuf compartilhado
-- `tests/` — testes do projeto
+## Pastas principais
 
-## Como a comunicação funciona
+- `broker/`: recebe e encaminha pedidos.
+- `client/`: bot em Python.
+- `server/`: servidor em Python.
+- `java/`: servidor e bot em Java.
+- `cpp/`: servidor e bot em C++.
+- `protocol/`: formato das mensagens usadas pelo projeto.
+- `tests/`: testes automatizados.
+- `docker-compose.yaml`: lista os serviços que rodam juntos.
 
-A comunicação usa ZeroMQ e Protobuf.
+## Executar o sistema
 
-### 1) Req/Rep para cliente e servidor
-Os bots enviam mensagens para o broker, que distribui entre os servidores disponíveis. Isso é usado para login, lista de canais, criação de canais e publicação.
-
-### 2) Pub/Sub para canais
-Quando um servidor aceita uma publicação, ele faz `PUB` no tópico do canal. Os bots que estiverem inscritos no canal recebem a mensagem e exibem no console.
-
-### 3) Referência para rank e heartbeat
-Existe um serviço de referência que mantém a lista de servidores disponíveis e devolve o rank de cada um.
-
-### 4) Coordenação entre servidores
-Os servidores trocam mensagens entre si para decidir quem é o coordenador. O servidor com maior rank vira coordenador e faz a sincronização Berkeley do relógio.
-
-### 5) Replicação
-Cada servidor persiste os eventos locais e envia cópias para os outros servidores, para que todos tenham o histórico o mais parecido possível.
-
-## Serialização e timestamps
-
-A troca de mensagens foi feita em Protobuf, então tudo fica em binário e não em JSON/XML/texto puro.
-
-Toda mensagem leva:
-- timestamp de envio
-- identificador da mensagem
-- relógio lógico
-
-Isso vale tanto para mensagens do cliente/servidor quanto para mensagens internas de coordenação e replicação.
-
-## Relógio lógico
-
-Cada processo mantém um relógio lógico.
-
-A regra é simples:
-- antes de enviar uma mensagem, o contador aumenta
-- ao receber uma mensagem, o processo usa o máximo entre o valor atual e o recebido
-- depois incrementa novamente e segue
-
-Isso ajuda a manter a ordem parcial dos eventos, mesmo sem relógio físico perfeito.
-
-## Relógio e coordenação
-
-Os servidores também têm um relógio físico local, mas ele é ajustado por uma sincronização controlada. O coordenador calcula a média dos relógios dos servidores e manda a hora correta para os demais.
-
-Se o coordenador cai, a eleição é feita novamente. O nome do servidor eleito é publicado no tópico `servers`, e os demais servidores atualizam o coordenador atual.
-
-## Persistência em disco
-
-Cada servidor tem um banco SQLite próprio, então não existe um banco central compartilhado.
-
-Os dados guardados incluem:
-- logins
-- canais criados
-- publicações
-- mensagens trocadas
-- eventos de replicação
-
-Isso evita perder informações quando o processo reinicia e também ajuda a recuperar o histórico de mensagens.
-
-## Replicação
-
-A replicação foi implementada com eventos e outbox. Cada operação relevante gera um evento, esse evento é gravado localmente e depois enviado para os pares. Os outros servidores aplicam o evento quando recebem e marcam como processado.
-
-A ideia é manter convergência eventual: todos os servidores tendem a ficar iguais ao longo do tempo, mesmo que não seja instantâneo. Não é consistência forte global, mas dá para manter o histórico distribuído.
-
-## O que cada parte do projeto faz
-
-### Parte 1 — Login e canais
-- bot faz login
-- lista canais disponíveis
-- cria canais quando necessário
-- persiste os dados em disco
-
-### Parte 2 — Publicação em canais
-- o bot se inscreve em canais
-- o servidor publica a mensagem no tópico do canal
-- os bots inscritos recebem a mensagem e exibem no console
-- o projeto usa proxy Pub/Sub para isso
-
-### Parte 3 — Relógio e heartbeat
-- cada mensagem carrega relógio lógico
-- os servidores fazem heartbeat com a referência
-- a referência guarda rank e lista de servidores disponíveis
-
-### Parte 4 — Eleição e coordenador
-- maior rank vira coordenador
-- coordenador sincroniza relógios dos servidores
-- anúncio do coordenador é feito em tópico `servers`
-
-### Parte 5 — Replicação
-- eventos são replicados entre servidores
-- dados ficam disponíveis mesmo se um nó cair
-- histórico é preservado e sincronizado entre os pares
-
-## Como rodar
-
-Na pasta do projeto:
+É necessário ter Docker e Docker Compose instalados. No terminal, a partir da pasta principal do repositório, rode:
 
 ```bash
+cd Projeto
 docker compose up --build
 ```
 
-Isso sobe:
-- broker
-- proxy Pub/Sub
-- referência
-- servidores Python, Java e C++
-- bots em Python, Java e C++
+O comando compila e inicia os servidores, os bots e os serviços de apoio. Os bots entram nos canais e publicam mensagens; as trocas aparecem no terminal.
 
-Para limpar tudo e começar do zero:
+Para parar os serviços, pressione `Ctrl+C` e rode:
+
+```bash
+docker compose down
+```
+
+Para apagar também os dados salvos pelos servidores e começar do zero:
 
 ```bash
 docker compose down -v
 ```
 
-## Escolhas do projeto
+## Rodar os testes
 
-A gente escolheu usar:
-- ZeroMQ para comunicação distribuída
-- Protobuf para serialização binária
-- SQLite para persistência local por servidor
-- Docker Desktop para execução do ambiente
-- referência + eleição + replicação para deixar o sistema mais parecido com um ambiente distribuído real
+Os testes automatizados em Python verificam, entre outras coisas, os relógios, os canais, o serviço de referência e a cópia de dados entre servidores. Para rodá-los, a partir da pasta principal do repositório:
+
+```bash
+cd Projeto
+python -m pip install -r requirements.txt
+python -m unittest discover -s tests -v
+```
